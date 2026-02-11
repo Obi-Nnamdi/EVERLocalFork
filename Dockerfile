@@ -44,6 +44,10 @@ RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86
 
 # Make conda available and create environment
 ENV PATH="/opt/conda/bin:${PATH}"
+
+RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main \
+&& conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+
 RUN conda update -n base -c defaults conda && \
     conda create -n ever python=3.10 -y && \
     conda clean -ya
@@ -70,6 +74,14 @@ RUN wget https://github.com/shader-slang/slang/releases/download/v2025.6.1/slang
     unzip ../slang-2025.6.1-linux-x86_64.zip && \
     cp bin/* /usr/bin/
 
+
+# RUN wget https://github.com/shader-slang/slang/releases/download/v2024.14.3/slang-2024.14.3-linux-x86_64.zip && \
+#     mkdir slang_install && \
+#     cd slang_install && \
+#     unzip ../slang-2024.14.3-linux-x86_64.zip && \
+#     cp bin/* /usr/bin/
+
+# cp /slang_install/include/* /usr/local/cuda-12.2/include/
 # Clone, build, and install abseil-cpp.
 RUN git clone https://github.com/abseil/abseil-cpp.git /tmp/abseil-cpp && \
     cd /tmp/abseil-cpp && \
@@ -85,8 +97,8 @@ RUN git clone https://github.com/abseil/abseil-cpp.git /tmp/abseil-cpp && \
 # ------------------------------------------------------
 RUN source activate ever && \
     # Adjust the PyTorch install line for your specific CUDA version if needed
-    pip3 install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126 && \
-    pip3 install --no-cache-dir cmake
+    pip3 install --no-cache-dir torch==2.6 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126 && \
+    pip3 install --no-cache-dir cmake==3.20.2
 
 # ------------------------------------------------------
 # 5) Final Container Setup
@@ -99,7 +111,7 @@ COPY ./requirements.txt /
 
 RUN cd / && \
     source activate ever && \
-    pip install -r requirements.txt
+    pip install --no-build-isolation -r requirements.txt
 
 COPY optix/ /opt/OptiX_7.4
 COPY . /ever_training
@@ -112,8 +124,11 @@ ENV LD_LIBRARY_PATH="/slang_install/lib/"
 
 WORKDIR /ever_training
 RUN source activate ever && \
-    rm -r ever/build && \
+    rm -rf ever/build && \
     bash install.bash
+
+# Unset LD_LIBRARY_PATH to avoid problems with slangtorch later
+ENV LD_LIBRARY_PATH=
 
 # Expose any ports needed for training or viewer
 EXPOSE 6009

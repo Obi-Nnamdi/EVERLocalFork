@@ -13,14 +13,20 @@ mkdir ever/build
 cd ever/build
 # CXX=/usr/bin/g++-11 CC=/usr/bin/gcc-11 cmake -DOptiX_INSTALL_DIR=$OptiX_INSTALL_DIR -D_GLIBCXX_USE_CXX11_ABI=1 ..
 # CXX=$CXX CC=$CC cmake -DOptiX_INSTALL_DIR=$OptiX_INSTALL_DIR ..
+# CXX=$CXX CC=$CC cmake -DOptiX_INSTALL_DIR=$OptiX_INSTALL_DIR -DCMAKE_CUDA_ARCHITECTURES="50;60;61;70;75;80;86" -DCMAKE_POLICY_VERSION_MINIMUM=3.5 ..
 CXX=$CXX CC=$CC cmake -DOptiX_INSTALL_DIR=$OptiX_INSTALL_DIR -DCMAKE_CUDA_ARCHITECTURES="50;60;61;70;75;80;86" ..
 make -j8
 cd ../..
 
-pip install -e submodules/simple-knn
+pip install --no-build-isolation submodules/simple-knn
 
 # SIBR Viewer
 cd SIBR_viewers
-cmake -Bbuild . -DCMAKE_BUILD_TYPE=Release
+git checkout fossa_compatibility # needed to properly build it
+
+
+rm -rf build # remove build directory to reset CMake Cache
+# cmake -Bbuild . -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES="50;60;61;70;75;80;86" -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+cmake -Bbuild . -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES="50;60;61;70;75;80;86"
 cmake --build build -j24 --target install
 cd ../..
