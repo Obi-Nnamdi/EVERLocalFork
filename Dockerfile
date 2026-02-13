@@ -38,9 +38,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 2) Install a Miniconda / Conda environment
 #    - We use Miniconda3 as an example here.
 # ------------------------------------------------------
-RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh && \
-    bash Miniconda3-latest-Linux-x86_64.sh -b -p /opt/conda && \
-    rm Miniconda3-latest-Linux-x86_64.sh
+RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-py313_25.11.1-1-Linux-x86_64.sh && \
+    bash Miniconda3-py313_25.11.1-1-Linux-x86_64.sh -b -p /opt/conda && \
+    rm Miniconda3-py313_25.11.1-1-Linux-x86_64.sh
 
 # Make conda available and create environment
 ENV PATH="/opt/conda/bin:${PATH}"
@@ -123,9 +123,20 @@ ENV CUDAARCHS="50 60 61 70 75 80 86"
 ENV LD_LIBRARY_PATH="/slang_install/lib/"
 
 WORKDIR /ever_training
+
+RUN source activate ever && pip install --no-build-isolation submodules/simple-knn
+
 RUN source activate ever && \
     rm -rf ever/build && \
-    bash install.bash
+    bash install_sibr_viewer.bash
+
+## PART 2 BUILD CUTOFF:
+# # Copy again to reflect code changes
+# COPY . /ever_training
+
+RUN source activate ever && \
+    rm -rf ever/build && \
+    bash install_splinetracer.bash
 
 # Unset LD_LIBRARY_PATH to avoid problems with slangtorch later
 ENV LD_LIBRARY_PATH=

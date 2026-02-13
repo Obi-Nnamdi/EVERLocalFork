@@ -1,0 +1,20 @@
+# Use a prelim base image that's just built to only have ever code
+FROM obinnamdi/ever:v1_prelim_base
+
+# Copy ever code again to reflect code changes
+# chown flag is needed to prevent VSCode from breaking edit permissions
+COPY ever /ever_training/ever
+
+RUN source activate ever && \
+    rm -rf ever/build && \
+    bash install_splinetracer.bash
+
+# Unset LD_LIBRARY_PATH to avoid problems with slangtorch later
+ENV LD_LIBRARY_PATH=
+
+# Expose any ports needed for training or viewer
+EXPOSE 6009
+
+# By default, just start a shell in the 'ever' environment
+CMD ["/bin/bash", "-c", "source activate ever && exec bash"]
+
