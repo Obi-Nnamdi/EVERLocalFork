@@ -19,6 +19,11 @@ PORT="${3:-6009}"
 IP="${4:-127.0.0.1}"
 shift 4
 
+
+
+# Added user flag to allow VSCode development at the same time (prevents file permissions from getting overrun)
+# (right now it treats the group user as 'nnamdiobi' instead of root which isn't a huge problem)
+# Changed rm -r to -rf to allow for forcing deletion of EVER directory (since it's now locally owned)
 docker run --rm --gpus all -it \
   -v /tmp/NVIDIA:/tmp/NVIDIA \
   -e NVIDIA_DRIVER_CAPABILITIES=graphics,compute,utility \
@@ -26,6 +31,7 @@ docker run --rm --gpus all -it \
   -v "$SCENE_LOCATION":/data/scene \
   -p "$IP:$PORT:$PORT" \
   -v "$(pwd)":/ever_training2 \
-  ever \
-  bash -c "source activate ever && cd /ever_training2 && rm -r ever && cp -r /ever_training/ever . && python host_render_server.py -m /data/trained_model -s /data/scene --port $PORT --ip $IP $*"
+  --user $(id -u):$(id -g) \
+  obinnamdi/ever:v1_full_build \
+  bash -c "source activate ever && cd /ever_training2 && rm -rf ever && cp -r /ever_training/ever . && python host_render_server.py -m /data/trained_model -s /data/scene --port $PORT --ip $IP $*"
 
