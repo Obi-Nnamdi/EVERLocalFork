@@ -31,6 +31,7 @@ import time
 from utils.sh_utils import eval_sh, RGB2SH, SH2RGB
 from ever.splinetracers.fast_ellipsoid_splinetracer import sp
 from ever.eval_sh import eval_sh as eval_sh2
+from ever.eval_sh import EvalSH as eval_sh_func
 from utils.graphics_utils import in_screen_from_ndc, project_points, visible_depth_from_camspace, fov2focal
 from scene.dataset_readers import ProjectionType
 
@@ -58,6 +59,9 @@ class FastRenderer:
         per_point_2d_filter_scale = torch.zeros(self.pc._xyz.shape[0], device=self.device)
         self.per_point_2d_filter_scale = 1
         self.scales, self.density = pc.get_scale_and_density_for_rendering(self.per_point_2d_filter_scale, 1.0)
+
+        # TODO: Temporary statefulness for normals that should have a better solution
+        self.normals = None
 
         color = self.get_color(view)
         half_attribs = torch.cat([self.mean, self.scales, self.quat], dim=1).half().contiguous()
@@ -97,7 +101,23 @@ class FastRenderer:
         # wct = view.world_view_transform.cuda().float()
         # T = torch.linalg.inv(wct.T)
         # v = T[:3, 2]
-        net_color = eval_sh2(self.pc.get_xyz, shs, cam_pos, self.pc.active_sh_degree)
+
+        # TODO: Replace with better solution, but create generated normals (one time)
+        if self.normals is None:
+            normal_k = 80 # 160 takes around 150s
+            rayo = cam_pos.reshape(3).contiguous()
+            means = self.pc.get_xyz.contiguous()
+
+            print(f"Calculating Normals (k = {normal_k}):")
+            start_time = time.perf_counter()
+            self.normals = eval_sh_func.make_normals(means, rayo, k=normal_k).to(self.device)
+            end_time = time.perf_counter()
+
+            print(f"Took {end_time - start_time:.2f}s to calculate normals. (k = {normal_k})")
+
+
+
+        net_color = eval_sh2(self.pc.get_xyz, shs, cam_pos, self.pc.active_sh_degree, normals=self.normals)
         # ic(net_color, SH2RGB(features))
         net_color = torch.nn.functional.softplus(net_color, beta=10)
         features = RGB2SH(net_color).reshape(-1, 1, 3)
