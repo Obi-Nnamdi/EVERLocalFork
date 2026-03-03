@@ -1,0 +1,41 @@
+{
+  "name": "EVER Devcontainer",
+  "image": "obinnamdi/ever:v1_full_build",
+  "forwardPorts": [6006],
+  "portsAttributes": {
+    "6006": { "label": "ServerRenderer", "onAutoForward": "notify" }
+  },
+  "runArgs": [
+    "--gpus",
+    "all"
+  ],
+
+
+  "otherPortsAttributes": { "onAutoForward": "ignore" },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-toolsai.jupyter",
+        "shader-slang.slang-language-extension"
+      ],
+      "settings": {
+        "remote.localPortHost": "127.0.0.1",
+        "python.defaultInterpreterPath": "/opt/conda/envs/ever",
+        "python.terminal.activateEnvironment": true
+      }
+    }
+  },
+  // Proper editing
+  // "remoteUser": "vscode",
+  // "containerUser": "vscode",
+  
+  "postCreateCommand": [
+  "bash",
+  "-c",
+  "source activate ever && pip install matplotlib"
+  ]
+
+
+}
