@@ -63,6 +63,9 @@ class FastRenderer:
         # TODO: Temporary statefulness for normals that should have a better solution
         self.normals = None
 
+        # Store a running time_step variable for testing
+        self.time_step = 0
+
         color = self.get_color(view)
         half_attribs = torch.cat([self.mean, self.scales, self.quat], dim=1).half().contiguous()
         self.prims.add_primitives(self.mean, self.scales, self.quat, half_attribs, self.density, color)
@@ -116,8 +119,9 @@ class FastRenderer:
             print(f"Took {end_time - start_time:.2f}s to calculate normals. (k = {normal_k})")
 
 
-
-        net_color = eval_sh2(self.pc.get_xyz, shs, cam_pos, self.pc.active_sh_degree, normals=self.normals)
+        print(f"Time Step: {self.time_step}")
+        net_color = eval_sh2(self.pc.get_xyz, shs, cam_pos, self.pc.active_sh_degree, normals=self.normals, time_step=self.time_step)
+        self.time_step += 1
         # ic(net_color, SH2RGB(features))
         net_color = torch.nn.functional.softplus(net_color, beta=10)
         features = RGB2SH(net_color).reshape(-1, 1, 3)
