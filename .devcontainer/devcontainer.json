@@ -7,7 +7,16 @@
   },
   "runArgs": [
     "--gpus",
-    "all"
+    "all",
+    "-e",
+    "NVIDIA_DRIVER_CAPABILITIES=graphics,compute,utility",
+    "-v",
+    "/tmp/NVIDIA:/tmp/NVIDIA",
+    // Properly Bind Output and Scene Directories
+    "-v",
+    "/home/nnamdiobi/projects/brdf_gaussians/outputs/flowers_output:/data/trained_model",
+    "-v",
+    "/home/nnamdiobi/projects/brdf_gaussians/datasets/flowers:/data/scene"
   ],
 
 
