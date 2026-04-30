@@ -56,7 +56,7 @@ def render_gaussian_model(gaussians: GaussianModel, model_params: ModelParams, o
     gaussians.training_setup(opt_params)
     torch.cuda.empty_cache()
 
-    camera_index = 120
+    camera_index = 31
     # Get the cameras.json file that enumerates all the cameras and their positions
     rendering_cam = get_rendering_cam(model_params, camera_index)
     
@@ -83,17 +83,26 @@ def render_gaussian_model(gaussians: GaussianModel, model_params: ModelParams, o
 
     print(f"{sphere_center = }")
     sphere_radius = .5
+    
     T_vals = intersect_sphere(rays_o, rays_d, sphere_center, sphere_radius) # (h*w) x 1
+    bounce_ray_o, bounce_ray_d = bounce_off_sphere(rays_o, rays_d, T_vals, sphere_center)
+
+    # TODO: Can use rendering t_max for creating sphere?
+    bounced_ray_output = renderer.trace_rays(bounce_ray_o, bounce_ray_d, rendering_cam, 0, 1e7)
+    bounce_image = bounced_ray_output['color'][:, :3].T.reshape(3, rendering_cam.image_height, rendering_cam.image_width)
+
     T_vals = T_vals.reshape(1, rendering_cam.image_height, rendering_cam.image_width) # (1, h, w)
 
     # Render quickly
     st = time.time()
 
     # TODO: Use opposite of t_min (t_max?) for creating chromesphere?
+    # t_max parameter would need to become a tensor basically...kinda weird
     image = renderer.render(rendering_cam, gaussians, background) # (3, h, w)
 
-    # Blot out image (white) where sphere appears
-    image = image + ~torch.isposinf(T_vals)
+    # Add bounce lighting to the image
+    masked_image = image * torch.isinf(T_vals) # Mask out part that hits the sphere
+    image = masked_image + bounce_image # Add in bounce lighting
     
     print(f"{image.shape}")
 
@@ -110,7 +119,9 @@ def render_gaussian_model(gaussians: GaussianModel, model_params: ModelParams, o
     torch.cuda.empty_cache()
     return image
 
-    
+
+
+
 
 def intersect_sphere(ray_o: torch.Tensor, ray_d: torch.Tensor, sphere_center: torch.Tensor, sphere_radius: float) -> torch.Tensor:
     """
@@ -131,7 +142,7 @@ def intersect_sphere(ray_o: torch.Tensor, ray_d: torch.Tensor, sphere_center: to
 
     # Initial test to see if sphere is in same direction as ray
     L = ray_o - sphere_center
-    T_center = torch.sum(L * ray_d, dim=1) # (N,)
+    T_center = col_wise_dot_product(ray_d, L) # (N,)
 
     print(T_center < 0)
     print(torch.sum(T_center < 0))
@@ -153,10 +164,35 @@ def intersect_sphere(ray_o: torch.Tensor, ray_d: torch.Tensor, sphere_center: to
     # torch.nan_to_num?
     T_vals = torch.minimum(T_zero, T_one)
     T_vals = torch.nan_to_num(T_vals, nan=float("inf"))
-    print(T_vals)
 
-    return T_vals
+    return T_vals.reshape(-1, 1) 
 
+def col_wise_dot_product(arr_1, arr_2, keepdim=False):
+    return torch.sum(arr_1 * arr_2, dim=1, keepdim=keepdim)# (N x 1)
+
+def bounce_off_sphere(ray_o: torch.Tensor, ray_d: torch.Tensor, t_vals: torch.Tensor, sphere_center: torch.Tensor):
+    """
+    Returns bounce_ray_o and bounce_ray_d's for intersections with spheres with incoming rays at the given t_vals.
+
+    ray_o: n x 3
+    ray_d: n x 3
+    ray_d: n x 3
+    t_vals: n x 1
+    sphere_center: 1 x 3
+
+    TODO: Could also be a slang kernel.
+    """
+    # Initial hit position (bounce ray origin)
+    hit_pos = ray_o + ray_d * t_vals # n x 3
+
+    # Normalize sphere normals
+    hit_normal_unnorm = hit_pos - sphere_center # n x 3
+    hit_normal = hit_normal_unnorm / torch.linalg.norm(hit_normal_unnorm, dim=1, keepdim=True)
+
+    # Reflect rays (bounce ray direction)
+    reflected_rays = ray_d - 2 * hit_normal * (col_wise_dot_product(ray_d, hit_normal, keepdim=True))
+
+    return hit_pos, reflected_rays
 
 
 
