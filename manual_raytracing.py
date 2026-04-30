@@ -138,13 +138,14 @@ def intersect_sphere(ray_o: torch.Tensor, ray_d: torch.Tensor, sphere_center: to
 
     # Distance from ray to sphere center
     L_distances = torch.linalg.norm(L, dim=1) # (N,)
-    D = torch.sqrt(L_distances**2 - T_center**2) # (N,)
+    D_squared = L_distances**2 - T_center**2 # (N,)
 
-    print(D < sphere_radius)
-    print(torch.sum(D < sphere_radius))
+    sphere_rad_squared = sphere_radius**2
+    print(D_squared < sphere_rad_squared)
+    print(torch.sum(D_squared < sphere_rad_squared))
 
     # T values
-    T_hc = torch.sqrt(sphere_radius**2 - D**2)
+    T_hc = torch.sqrt(sphere_rad_squared - D_squared)
     T_zero = T_center - T_hc
     T_one = T_center + T_hc
 
