@@ -73,11 +73,29 @@ def render_gaussian_model(gaussians: GaussianModel, model_params: ModelParams, o
     renderer = FastRenderer(rendering_cam, gaussians, pipe_params.enable_GLO)
     renderer.set_camera(rendering_cam)
 
+    #Render sphere
+    rays_o, rays_d = renderer.get_rays(rendering_cam)
+    sphere_center_translation = torch.zeros((1, 3), device="cuda")
+    avg_position = torch.mean(rays_o, dim=0).reshape(1, 3)
+    avg_direction = torch.mean(rays_d, dim=0).reshape(1, 3)
+
+    sphere_center = avg_position + avg_direction * 2
+
+    print(f"{sphere_center = }")
+    sphere_radius = .5
+    T_vals = intersect_sphere(rays_o, rays_d, sphere_center, sphere_radius) # (h*w) x 1
+    T_vals = T_vals.reshape(1, rendering_cam.image_height, rendering_cam.image_width) # (1, h, w)
+
     # Render quickly
     st = time.time()
 
     # TODO: Use opposite of t_min (t_max?) for creating chromesphere?
-    image = renderer.render(rendering_cam, gaussians, background)
+    image = renderer.render(rendering_cam, gaussians, background) # (3, h, w)
+
+    # Blot out image (white) where sphere appears
+    image = image + ~torch.isposinf(T_vals)
+    
+    print(f"{image.shape}")
 
     print(f"Took {time.time()-st}s to render frame.")
 
@@ -90,8 +108,54 @@ def render_gaussian_model(gaussians: GaussianModel, model_params: ModelParams, o
     cv2.imwrite(Path(model_params.model_path) / "test_output.png", image)
     
     torch.cuda.empty_cache()
+    return image
 
     
+
+def intersect_sphere(ray_o: torch.Tensor, ray_d: torch.Tensor, sphere_center: torch.Tensor, sphere_radius: float) -> torch.Tensor:
+    """
+    Intersect a group of rays with a sphere, returning the t_min of each ray that hits it (and the normal)
+
+    ray_o: n x 3
+    ray_d: n x 3
+    sphere_center: 1 x 3
+    sphere_radius: float
+
+    TODO: Could also make into a slang kernel.
+    """
+    print(f"{ray_o.shape = }")
+    print(f"{ray_d.shape = }")
+
+    # Following https://www.scratchapixel.com/lessons/3d-basic-rendering/minimal-ray-tracer-rendering-simple-shapes/ray-sphere-intersection.html
+
+
+    # Initial test to see if sphere is in same direction as ray
+    L = ray_o - sphere_center
+    T_center = torch.sum(L * ray_d, dim=1) # (N,)
+
+    print(T_center < 0)
+    print(torch.sum(T_center < 0))
+
+    # Distance from ray to sphere center
+    L_distances = torch.linalg.norm(L, dim=1) # (N,)
+    D = torch.sqrt(L_distances**2 - T_center**2) # (N,)
+
+    print(D < sphere_radius)
+    print(torch.sum(D < sphere_radius))
+
+    # T values
+    T_hc = torch.sqrt(sphere_radius**2 - D**2)
+    T_zero = T_center - T_hc
+    T_one = T_center + T_hc
+
+    # Need to be careful about NaNs here (even before minimum computation)
+    # torch.nan_to_num?
+    T_vals = torch.minimum(T_zero, T_one)
+    T_vals = torch.nan_to_num(T_vals, nan=float("inf"))
+    print(T_vals)
+
+    return T_vals
+
 
 
 
