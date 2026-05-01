@@ -9,14 +9,23 @@
     "--gpus",
     "all",
     "-e",
-    "NVIDIA_DRIVER_CAPABILITIES=graphics,compute,utility",
+    "NVIDIA_DRIVER_CAPABILITIES=all",
     "-v",
     "/tmp/NVIDIA:/tmp/NVIDIA",
     // Properly Bind Output and Scene Directories
     "-v",
-    "/home/nnamdiobi/projects/brdf_gaussians/outputs/flowers_output:/data/trained_model",
+    "/home/nnamdi-obi/Desktop/projects/brdf_gaussians/outputs/flowers_output:/data/trained_model",
     "-v",
-    "/home/nnamdiobi/projects/brdf_gaussians/datasets/flowers:/data/scene"
+    "/home/nnamdi-obi/Desktop/projects/brdf_gaussians/datasets/flowers:/data/scene",
+    // Properly bind X11 for display (https://www.pugetsystems.com/labs/hpc/NVIDIA-Docker2-with-OpenGL-and-X-Display-Output-1527/)
+    "-v",
+    "/tmp/.X11-unix:/tmp/.X11-unix",
+    "-e",
+    "XAUTHORITY",
+    // "--privileged"
+
+    // NEEDED for GUI Apps to work.
+    "--network=host"
   ],
 
 
@@ -43,7 +52,8 @@
   "postCreateCommand": [
   "bash",
   "-c",
-  "source activate ever && pip install matplotlib"
+  // Get GUI Apps working
+  "source activate ever && pip install matplotlib && apt update && apt install -y mesa-utils"
   ]
 
 
