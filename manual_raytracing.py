@@ -87,67 +87,12 @@ def render_gaussian_model(gaussians: GaussianModel, model_params: ModelParams, o
     avg_direction = torch.mean(rays_d, dim=0).reshape(1, 3)
 
     sphere_center = avg_position + avg_direction * 2
-
-    print(f"{sphere_center = }")
     sphere_radius = .5
     
     T_vals = intersect_sphere(rays_o, rays_d, sphere_center, sphere_radius) # (h*w) x 1
-    print(f"{T_vals = }")
     bounce_ray_o, bounce_ray_d = bounce_off_sphere(rays_o, rays_d, T_vals, sphere_center)
 
-    ax = plot_ray_o_and_d(torch.cat([rays_o[0:1, :], bounce_ray_o]), torch.cat([torch.zeros_like(rays_d[0:1, :]), bounce_ray_d]), 
-                          render_fig=False, alpha=.5, label="Bounced rays")
-    # ax = plot_ray_o_and_d(bounce_ray_o, bounce_ray_d, render_fig=False, alpha=.5)
-    sphere_center_list = sphere_center.cpu().ravel().tolist()
-    
-    
-    # plt.axis('equal')
-    ax.set_aspect('equal')
-    fig = plt.gcf()
-    fig.set_size_inches(18.5, 10.5)
-
-    # Make sphere data (from https://matplotlib.org/stable/gallery/mplot3d/surface3d_2.html)
-    u = np.linspace(0, 2 * np.pi, 100)
-    v = np.linspace(0, np.pi, 100)
-    x = sphere_radius * np.outer(np.cos(u), np.sin(v)) + sphere_center_list[0]
-    y = sphere_radius * np.outer(np.sin(u), np.sin(v)) + sphere_center_list[1]
-    z = sphere_radius * np.outer(np.ones(np.size(u)), np.cos(v)) + sphere_center_list[2]
-
-    ax.plot_surface(x, y, z, alpha=.7, color='y', label='Sphere')
-    ax.scatter(*sphere_center_list, marker="X", s=60, label='Sphere Center')
-
-    # Show bouncing rays:
-    bouncing_ray_indices = torch.nonzero(~torch.isinf(T_vals).ravel()).ravel() # (B,)
-    T_vals_valid = T_vals[bouncing_ray_indices].cpu() # (B x 1)
-    valid_bouncing_ray_os = rays_o[bouncing_ray_indices].cpu() # (B x 3)
-    valid_bouncing_ray_ds = rays_d[bouncing_ray_indices].cpu() # (B x 3)
-    valid_bouncing_ray_ds = valid_bouncing_ray_ds * T_vals_valid # (B x 3)
-
-
-
-    ax.quiver3D(valid_bouncing_ray_os[:, 0], valid_bouncing_ray_os[:, 1], valid_bouncing_ray_os[:, 2],
-                valid_bouncing_ray_ds[:, 0], valid_bouncing_ray_ds[:, 1], valid_bouncing_ray_ds[:, 2],
-                color='g', arrow_length_ratio=.05, linewidth=1.2, label='Camera Rays', alpha=.5)
-    
-    ax.legend()
-
-    # Set views (https://matplotlib.org/stable/api/toolkits/mplot3d/view_angles.html)
-    azim_angles = np.linspace(0, 180, 8)
-    for azim in azim_angles:
-        # Set view
-        ax.view_init(azim=azim)
-        
-        fig_name=f"combined_rayo_output_azim_{azim.item():.2f}.png"
-        save_path = Path(__file__).parent / fig_name
-        plt.savefig(save_path)
-        print(f"Saved output figure at {str(save_path)}")
-
-    # ax.view_init(azim=135)
-    
-    # fig_name="combined_rayo_output_135.png"
-    # save_path = Path(__file__).parent / fig_name
-    # plt.savefig(save_path)
-    # print(f"Saved output figure at {str(save_path)}")
+    plot_rays_and_sphere(rays_o, rays_d, sphere_center, sphere_radius, T_vals, bounce_ray_o, bounce_ray_d)
 
     # TODO: Can use rendering t_max for creating sphere?
     bounced_ray_output = renderer.trace_rays(bounce_ray_o, bounce_ray_d, rendering_cam, 0, 1e7)
@@ -180,6 +125,56 @@ def render_gaussian_model(gaussians: GaussianModel, model_params: ModelParams, o
     
     torch.cuda.empty_cache()
     return image
+
+def plot_rays_and_sphere(rays_o: torch.Tensor, rays_d: torch.Tensor, sphere_center: torch.Tensor, sphere_radius: torch.Tensor, 
+                         T_vals: torch.Tensor, bounce_ray_o: torch.Tensor, bounce_ray_d: torch.Tensor):
+    """
+    Create matplotlib plots of the original camera rays, sphere, and the rays that bounced off of it.
+    """
+    ax = plot_ray_o_and_d(torch.cat([rays_o[0:1, :], bounce_ray_o]), torch.cat([torch.zeros_like(rays_d[0:1, :]), bounce_ray_d]), 
+                          render_fig=False, alpha=.5, label="Bounced rays")
+    sphere_center_list = sphere_center.cpu().ravel().tolist()
+    
+    
+    # plt.axis('equal')
+    ax.set_aspect('equal')
+    fig = plt.gcf()
+    fig.set_size_inches(18.5, 10.5)
+
+    # Make sphere data (from https://matplotlib.org/stable/gallery/mplot3d/surface3d_2.html)
+    u = np.linspace(0, 2 * np.pi, 100)
+    v = np.linspace(0, np.pi, 100)
+    x = sphere_radius * np.outer(np.cos(u), np.sin(v)) + sphere_center_list[0]
+    y = sphere_radius * np.outer(np.sin(u), np.sin(v)) + sphere_center_list[1]
+    z = sphere_radius * np.outer(np.ones(np.size(u)), np.cos(v)) + sphere_center_list[2]
+
+    ax.plot_surface(x, y, z, alpha=.7, color='y', label='Sphere')
+    ax.scatter(*sphere_center_list, marker="X", s=60, label='Sphere Center')
+
+    # Show bouncing rays:
+    bouncing_ray_indices = torch.nonzero(~torch.isinf(T_vals).ravel()).ravel() # (B,)
+    T_vals_valid = T_vals[bouncing_ray_indices].cpu() # (B x 1)
+    valid_bouncing_ray_os = rays_o[bouncing_ray_indices].cpu() # (B x 3)
+    valid_bouncing_ray_ds = rays_d[bouncing_ray_indices].cpu() # (B x 3)
+    valid_bouncing_ray_ds = valid_bouncing_ray_ds * T_vals_valid # (B x 3)
+
+    ax.quiver3D(valid_bouncing_ray_os[:, 0], valid_bouncing_ray_os[:, 1], valid_bouncing_ray_os[:, 2],
+                valid_bouncing_ray_ds[:, 0], valid_bouncing_ray_ds[:, 1], valid_bouncing_ray_ds[:, 2],
+                color='g', arrow_length_ratio=.05, linewidth=1.2, label='Camera Rays', alpha=.5)
+    
+    # Produce Legend.
+    ax.legend()
+
+    # Set views (https://matplotlib.org/stable/api/toolkits/mplot3d/view_angles.html)
+    azim_angles = np.linspace(0, 180, 8)
+    for azim in azim_angles:
+        # Set view
+        ax.view_init(azim=azim)
+        
+        fig_name=f"combined_rayo_output_azim_{azim.item():.2f}.png"
+        save_path = Path(__file__).parent / "graphs" / fig_name
+        plt.savefig(save_path)
+        print(f"Saved output figure at {str(save_path)}")
 
 
 def plot_ray_o_and_d(ray_o: torch.Tensor, ray_d: torch.Tensor, render_fig = True, fig_name = "test_rayo_output.png", **quiver_kwargs):
@@ -229,16 +224,16 @@ def intersect_sphere(ray_o: torch.Tensor, ray_d: torch.Tensor, sphere_center: to
     L = sphere_center - ray_o
     T_center = col_wise_dot_product(ray_d, L) # (N,)
 
-    print(T_center < 0)
-    print(torch.sum(T_center < 0))
+    # print(T_center < 0)
+    # print(torch.sum(T_center < 0))
 
     # Distance from ray to sphere center
     L_distances = torch.linalg.norm(L, dim=1) # (N,)
     D_squared = L_distances**2 - T_center**2 # (N,)
 
     sphere_rad_squared = sphere_radius**2
-    print(D_squared < sphere_rad_squared)
-    print(torch.sum(D_squared < sphere_rad_squared))
+    # print(D_squared < sphere_rad_squared)
+    # print(torch.sum(D_squared < sphere_rad_squared))
 
     # T values
     T_hc = torch.sqrt(sphere_rad_squared - D_squared)
