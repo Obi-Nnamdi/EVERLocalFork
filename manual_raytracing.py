@@ -29,6 +29,12 @@ from utils.graphics_utils import getWorld2View2, getProjectionMatrix, focal2fov
 
 from scene.dataset_readers import ProjectionType
 
+# Graphing
+import matplotlib
+matplotlib.use('Agg') # headless mode
+import matplotlib.pyplot as plt
+import numpy as np
+
 def load_gaussian_model(model_params: ModelParams, opt_params: OptimizationParams, checkpoint: os.PathLike | None) -> GaussianModel:
     first_iter = 0
     gaussians = GaussianModel(model_params.sh_degree, model_params.use_neural_network, model_params.max_opacity)
@@ -61,7 +67,7 @@ def render_gaussian_model(gaussians: GaussianModel, model_params: ModelParams, o
     rendering_cam = get_rendering_cam(model_params, camera_index)
     
     # TODO: Do rendering
-    preview_factor = 4
+    preview_factor = 250
     image_width = rendering_cam.image_width
     image_height = rendering_cam.image_height
 
@@ -75,6 +81,7 @@ def render_gaussian_model(gaussians: GaussianModel, model_params: ModelParams, o
 
     #Render sphere
     rays_o, rays_d = renderer.get_rays(rendering_cam)
+
     sphere_center_translation = torch.zeros((1, 3), device="cuda")
     avg_position = torch.mean(rays_o, dim=0).reshape(1, 3)
     avg_direction = torch.mean(rays_d, dim=0).reshape(1, 3)
@@ -85,7 +92,62 @@ def render_gaussian_model(gaussians: GaussianModel, model_params: ModelParams, o
     sphere_radius = .5
     
     T_vals = intersect_sphere(rays_o, rays_d, sphere_center, sphere_radius) # (h*w) x 1
+    print(f"{T_vals = }")
     bounce_ray_o, bounce_ray_d = bounce_off_sphere(rays_o, rays_d, T_vals, sphere_center)
+
+    ax = plot_ray_o_and_d(torch.cat([rays_o[0:1, :], bounce_ray_o]), torch.cat([torch.zeros_like(rays_d[0:1, :]), bounce_ray_d]), 
+                          render_fig=False, alpha=.5, label="Bounced rays")
+    # ax = plot_ray_o_and_d(bounce_ray_o, bounce_ray_d, render_fig=False, alpha=.5)
+    sphere_center_list = sphere_center.cpu().ravel().tolist()
+    
+    
+    # plt.axis('equal')
+    ax.set_aspect('equal')
+    fig = plt.gcf()
+    fig.set_size_inches(18.5, 10.5)
+
+    # Make sphere data (from https://matplotlib.org/stable/gallery/mplot3d/surface3d_2.html)
+    u = np.linspace(0, 2 * np.pi, 100)
+    v = np.linspace(0, np.pi, 100)
+    x = sphere_radius * np.outer(np.cos(u), np.sin(v)) + sphere_center_list[0]
+    y = sphere_radius * np.outer(np.sin(u), np.sin(v)) + sphere_center_list[1]
+    z = sphere_radius * np.outer(np.ones(np.size(u)), np.cos(v)) + sphere_center_list[2]
+
+    ax.plot_surface(x, y, z, alpha=.7, color='y', label='Sphere')
+    ax.scatter(*sphere_center_list, marker="X", s=60, label='Sphere Center')
+
+    # Show bouncing rays:
+    bouncing_ray_indices = torch.nonzero(~torch.isinf(T_vals).ravel()).ravel() # (B,)
+    T_vals_valid = T_vals[bouncing_ray_indices].cpu() # (B x 1)
+    valid_bouncing_ray_os = rays_o[bouncing_ray_indices].cpu() # (B x 3)
+    valid_bouncing_ray_ds = rays_d[bouncing_ray_indices].cpu() # (B x 3)
+    valid_bouncing_ray_ds = valid_bouncing_ray_ds * T_vals_valid # (B x 3)
+
+
+
+    ax.quiver3D(valid_bouncing_ray_os[:, 0], valid_bouncing_ray_os[:, 1], valid_bouncing_ray_os[:, 2],
+                valid_bouncing_ray_ds[:, 0], valid_bouncing_ray_ds[:, 1], valid_bouncing_ray_ds[:, 2],
+                color='g', arrow_length_ratio=.05, linewidth=1.2, label='Camera Rays', alpha=.5)
+    
+    ax.legend()
+
+    # Set views (https://matplotlib.org/stable/api/toolkits/mplot3d/view_angles.html)
+    azim_angles = np.linspace(0, 180, 8)
+    for azim in azim_angles:
+        # Set view
+        ax.view_init(azim=azim)
+        
+        fig_name=f"combined_rayo_output_azim_{azim.item():.2f}.png"
+        save_path = Path(__file__).parent / fig_name
+        plt.savefig(save_path)
+        print(f"Saved output figure at {str(save_path)}")
+
+    # ax.view_init(azim=135)
+    
+    # fig_name="combined_rayo_output_135.png"
+    # save_path = Path(__file__).parent / fig_name
+    # plt.savefig(save_path)
+    # print(f"Saved output figure at {str(save_path)}")
 
     # TODO: Can use rendering t_max for creating sphere?
     bounced_ray_output = renderer.trace_rays(bounce_ray_o, bounce_ray_d, rendering_cam, 0, 1e7)
@@ -120,7 +182,30 @@ def render_gaussian_model(gaussians: GaussianModel, model_params: ModelParams, o
     return image
 
 
+def plot_ray_o_and_d(ray_o: torch.Tensor, ray_d: torch.Tensor, render_fig = True, fig_name = "test_rayo_output.png", **quiver_kwargs):
+    ray_o, ray_d = ray_o.cpu(), ray_d.cpu()
+    fig = plt.figure()
+    ax = fig.add_subplot(projection='3d')
 
+
+    ax.scatter(ray_o[:, 0], ray_o[:, 1], ray_o[:, 2], marker="o", c=ray_o[:, 2], cmap='tab10')
+    ax.set_title(f"Generated Ray Origins and Directions")
+
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z")
+    ax.invert_yaxis()
+
+    # Plot output normals:
+    # https://matplotlib.org/stable/gallery/mplot3d/quiver3d.html
+    ax.quiver3D(ray_o[:, 0], ray_o[:, 1], ray_o[:, 2], ray_d[:, 0], ray_d[:, 1], ray_d[:, 2], length = 0.5, cmap='tab10', arrow_length_ratio=.2, **quiver_kwargs)
+
+    if render_fig:
+        save_path = Path(__file__).parent / fig_name
+        plt.savefig(save_path)
+        print(f"Saved output figure at {str(save_path)}")
+
+    return ax
 
 
 def intersect_sphere(ray_o: torch.Tensor, ray_d: torch.Tensor, sphere_center: torch.Tensor, sphere_radius: float) -> torch.Tensor:
@@ -141,7 +226,7 @@ def intersect_sphere(ray_o: torch.Tensor, ray_d: torch.Tensor, sphere_center: to
 
 
     # Initial test to see if sphere is in same direction as ray
-    L = ray_o - sphere_center
+    L = sphere_center - ray_o
     T_center = col_wise_dot_product(ray_d, L) # (N,)
 
     print(T_center < 0)
@@ -160,10 +245,15 @@ def intersect_sphere(ray_o: torch.Tensor, ray_d: torch.Tensor, sphere_center: to
     T_zero = T_center - T_hc
     T_one = T_center + T_hc
 
+    # T vals greater than 0 are only considered (filled with inf for comparison otherwise)
+    t_min = 0
+    T_zero = torch.where(T_zero < t_min, float("inf"), T_zero)
+    T_one = torch.where(T_one < t_min, float("inf"),  T_one)
+
     # Need to be careful about NaNs here (even before minimum computation)
     # torch.nan_to_num?
     T_vals = torch.minimum(T_zero, T_one)
-    T_vals = torch.nan_to_num(T_vals, nan=float("inf"))
+    T_vals = torch.nan_to_num(T_vals, nan=float("inf"), posinf=float("inf"))
 
     return T_vals.reshape(-1, 1) 
 
