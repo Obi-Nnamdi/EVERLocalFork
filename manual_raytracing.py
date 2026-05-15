@@ -100,7 +100,8 @@ def render_gaussian_model(gaussians: GaussianModel, model_params: ModelParams, o
     # Slang kernel params for launching processes
     block_size = 64
     num_pixels = rays_o.size(0)
-    
+
+    # Intersect the sphere
     kernels.intersect_sphere(
         ray_origins=rays_o, ray_directions=rays_d, sphere_center=sphere_center, sphere_radius=sphere_radius, T_values=T_vals
     ).launchRaw(
@@ -109,12 +110,26 @@ def render_gaussian_model(gaussians: GaussianModel, model_params: ModelParams, o
     )
 
     # T_vals = intersect_sphere(rays_o, rays_d, sphere_center, sphere_radius) # (h*w) x 1
-    bounce_ray_o, bounce_ray_d = bounce_off_sphere(rays_o, rays_d, T_vals, sphere_center)
+
+    # Compute bounce rays
+    bounce_ray_o = torch.full_like(rays_o, float("inf"))
+    bounce_ray_d = torch.full_like(rays_d, 0)
+
+    kernels.bounce_off_sphere(
+        ray_origins=rays_o, ray_directions=rays_d, sphere_center=sphere_center, T_values=T_vals,
+        bounce_ray_origins=bounce_ray_o, bounce_ray_directions=bounce_ray_d
+    ).launchRaw(
+        blockSize=(block_size, 1, 1),
+        gridSize=(num_pixels // block_size + 1, 1, 1)
+    )
+
+    # bounce_ray_o, bounce_ray_d = bounce_off_sphere(rays_o, rays_d, T_vals, sphere_center)
     print(f"Took {time.time() - sphere_intersect_st}s to intersect sphere") 
 
-    # Done if debugging.
+    # See camera, spehre, and bounce rays if debugging.
     # plot_rays_and_sphere(rays_o, rays_d, sphere_center, sphere_radius, T_vals, bounce_ray_o, bounce_ray_d)
 
+    # Render bounce rays
     # TODO: Can use rendering t_max for creating sphere?
     bounced_ray_output = renderer.trace_rays(bounce_ray_o, bounce_ray_d, rendering_cam, 0, 1e7)
     bounce_image = bounced_ray_output['color'][:, :3].T.reshape(3, rendering_cam.image_height, rendering_cam.image_width)
@@ -148,7 +163,7 @@ def render_gaussian_model(gaussians: GaussianModel, model_params: ModelParams, o
     torch.cuda.empty_cache()
     return image
 
-def plot_rays_and_sphere(rays_o: torch.Tensor, rays_d: torch.Tensor, sphere_center: torch.Tensor, sphere_radius: torch.Tensor, 
+def plot_rays_and_sphere(rays_o: torch.Tensor, rays_d: torch.Tensor, sphere_center: torch.Tensor, sphere_radius: float, 
                          T_vals: torch.Tensor, bounce_ray_o: torch.Tensor, bounce_ray_d: torch.Tensor):
     """
     Create matplotlib plots of the original camera rays, sphere, and the rays that bounced off of it.
