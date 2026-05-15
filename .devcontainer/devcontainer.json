@@ -1,6 +1,6 @@
 {
   "name": "EVER Devcontainer",
-  "image": "obinnamdi/ever:v1_full_build",
+  "image": "obinnamdi/ever:v1.1_full_build",
   "forwardPorts": [6006],
   "portsAttributes": {
     "6006": { "label": "ServerRenderer", "onAutoForward": "notify" }
@@ -41,20 +41,21 @@
       "settings": {
         "remote.localPortHost": "127.0.0.1",
         "python.defaultInterpreterPath": "/opt/conda/envs/ever",
-        "python.terminal.activateEnvironment": true
+        "python.terminal.activateEnvironment": true,
+        "git.path": "/usr/bin/git"
       }
     }
-  },
+  }
   // Proper editing
   // "remoteUser": "vscode",
   // "containerUser": "vscode",
   
-  "postCreateCommand": [
-  "bash",
-  "-c",
-  // Get GUI Apps working
-  "source activate ever && pip install matplotlib && apt update && apt install -y mesa-utils"
-  ]
+  // Get GUI Apps working if running with a container without these installed already
+  // "postCreateCommand": [
+  // "bash",
+  // "-c",
+  // "source activate ever && pip install matplotlib && apt update && apt install -y mesa-utils"
+  // ]
 
 
 }
