@@ -35,6 +35,11 @@ matplotlib.use('Agg') # headless mode
 import matplotlib.pyplot as plt
 import numpy as np
 
+# Slangtorch Kernels
+import slangtorch
+kernels = slangtorch.loadModule(
+    str(Path(__file__).parent / "ever/splinetracers/slang/sphere_raytrace.slang")
+)
 def load_gaussian_model(model_params: ModelParams, opt_params: OptimizationParams, checkpoint: os.PathLike | None) -> GaussianModel:
     first_iter = 0
     gaussians = GaussianModel(model_params.sh_degree, model_params.use_neural_network, model_params.max_opacity)
@@ -67,7 +72,7 @@ def render_gaussian_model(gaussians: GaussianModel, model_params: ModelParams, o
     rendering_cam = get_rendering_cam(model_params, camera_index)
     
     # TODO: Do rendering
-    preview_factor = 250
+    preview_factor = 4
     image_width = rendering_cam.image_width
     image_height = rendering_cam.image_height
 
@@ -89,10 +94,26 @@ def render_gaussian_model(gaussians: GaussianModel, model_params: ModelParams, o
     sphere_center = avg_position + avg_direction * 2
     sphere_radius = .5
     
-    T_vals = intersect_sphere(rays_o, rays_d, sphere_center, sphere_radius) # (h*w) x 1
-    bounce_ray_o, bounce_ray_d = bounce_off_sphere(rays_o, rays_d, T_vals, sphere_center)
+    sphere_intersect_st = time.time()
+    T_vals = torch.full((rays_o.size(0), 1), float("inf"), device="cuda") # Any non-intersections default to "inf" as their t value
 
-    plot_rays_and_sphere(rays_o, rays_d, sphere_center, sphere_radius, T_vals, bounce_ray_o, bounce_ray_d)
+    # Slang kernel params for launching processes
+    block_size = 64
+    num_pixels = rays_o.size(0)
+    
+    kernels.intersect_sphere(
+        ray_origins=rays_o, ray_directions=rays_d, sphere_center=sphere_center, sphere_radius=sphere_radius, T_values=T_vals
+    ).launchRaw(
+        blockSize=(block_size, 1, 1),
+        gridSize=(num_pixels // block_size + 1, 1, 1)
+    )
+
+    # T_vals = intersect_sphere(rays_o, rays_d, sphere_center, sphere_radius) # (h*w) x 1
+    bounce_ray_o, bounce_ray_d = bounce_off_sphere(rays_o, rays_d, T_vals, sphere_center)
+    print(f"Took {time.time() - sphere_intersect_st}s to intersect sphere") 
+
+    # Done if debugging.
+    # plot_rays_and_sphere(rays_o, rays_d, sphere_center, sphere_radius, T_vals, bounce_ray_o, bounce_ray_d)
 
     # TODO: Can use rendering t_max for creating sphere?
     bounced_ray_output = renderer.trace_rays(bounce_ray_o, bounce_ray_d, rendering_cam, 0, 1e7)
@@ -105,6 +126,7 @@ def render_gaussian_model(gaussians: GaussianModel, model_params: ModelParams, o
 
     # TODO: Use opposite of t_min (t_max?) for creating chromesphere?
     # t_max parameter would need to become a tensor basically...kinda weird
+    torch.cuda.empty_cache()
     image = renderer.render(rendering_cam, gaussians, background) # (3, h, w)
 
     # Add bounce lighting to the image
@@ -121,7 +143,7 @@ def render_gaussian_model(gaussians: GaussianModel, model_params: ModelParams, o
 
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-    cv2.imwrite(Path(model_params.model_path) / "test_output.png", image)
+    cv2.imwrite(Path(model_params.model_path) / f"chromesphere_output_camera_{camera_index}.png", image)
     
     torch.cuda.empty_cache()
     return image
@@ -214,9 +236,6 @@ def intersect_sphere(ray_o: torch.Tensor, ray_d: torch.Tensor, sphere_center: to
 
     TODO: Could also make into a slang kernel.
     """
-    print(f"{ray_o.shape = }")
-    print(f"{ray_d.shape = }")
-
     # Following https://www.scratchapixel.com/lessons/3d-basic-rendering/minimal-ray-tracer-rendering-simple-shapes/ray-sphere-intersection.html
 
 
