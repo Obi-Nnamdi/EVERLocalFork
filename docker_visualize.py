@@ -32,6 +32,6 @@ docker run --rm --gpus all -it \
   -p "$IP:$PORT:$PORT" \
   -v "$(pwd)":/ever_training2 \
   --user $(id -u):$(id -g) \
-  obinnamdi/ever:v1_full_build \
+  obinnamdi/ever:v1.1_full_build \
   bash -c "source activate ever && cd /ever_training2 && rm -rf ever && cp -r /ever_training/ever . && python host_render_server.py -m /data/trained_model -s /data/scene --port $PORT --ip $IP $*"
 

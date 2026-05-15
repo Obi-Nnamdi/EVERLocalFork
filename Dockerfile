@@ -32,6 +32,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # libabsl-dev \
     libcgal-dev \
     libglm-dev \
+    mesa-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # ------------------------------------------------------

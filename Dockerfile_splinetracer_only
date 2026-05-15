@@ -1,5 +1,5 @@
 # Use a prelim base image that's just built to only have ever code
-FROM obinnamdi/ever:v1_prelim_base
+FROM obinnamdi/ever:v1.1_prelim_base
 
 # Copy ever code again to reflect code changes
 # chown flag is needed to prevent VSCode from breaking edit permissions

@@ -10,3 +10,4 @@ icecream
 plyfile
 opencv-python
 tensorly
+matplotlib
