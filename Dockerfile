@@ -135,6 +135,8 @@ RUN source activate ever && \
 # # Copy again to reflect code changes
 # COPY . /ever_training
 
+# Comment out everything below this to build the prelim image:
+    
 RUN source activate ever && \
     rm -rf ever/build && \
     bash install_splinetracer.bash

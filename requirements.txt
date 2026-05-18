@@ -11,3 +11,5 @@ plyfile
 opencv-python
 tensorly
 matplotlib
+# Pin setuptools version to keep pkg_resources dependency
+setuptools==80.10.2
