@@ -67,11 +67,22 @@ def render_gaussian_model(gaussians: GaussianModel, model_params: ModelParams, o
     gaussians.training_setup(opt_params)
     torch.cuda.empty_cache()
 
-    camera_index = 31
+    camera_index = 1
     # Get the cameras.json file that enumerates all the cameras and their positions
     rendering_cam = get_rendering_cam(model_params, camera_index)
-    
-    # TODO: Do rendering
+
+    # Debug resulting camera
+    # print(f"{rendering_cam.camera_center = }")
+    # print(f"{rendering_cam.FoVy = }")
+    # print(f"{rendering_cam.FoVx = }")
+    # print(f"{rendering_cam.zfar = }")
+    # print(f"{rendering_cam.znear = }")
+    # print(f"{rendering_cam.image_height = }")
+    # print(f"{rendering_cam.image_width = }")
+    # print(f"{rendering_cam.world_view_transform = }")
+    # print(f"{rendering_cam.full_proj_transform = }")
+
+
     preview_factor = 4
     image_width = rendering_cam.image_width
     image_height = rendering_cam.image_height
@@ -92,7 +103,13 @@ def render_gaussian_model(gaussians: GaussianModel, model_params: ModelParams, o
     avg_direction = torch.mean(rays_d, dim=0).reshape(1, 3)
 
     sphere_center = avg_position + avg_direction * 2
+    # Trying a custom value for sphere center
+    # sphere_center = torch.tensor([.12, -5.57, -7.3947], device="cuda").reshape(1,3)
     sphere_radius = .5
+    # print(f"{sphere_center  = }")
+    # print(f"{avg_position  = }")
+    # print(f"{avg_direction  = }")
+
     
     sphere_intersect_st = time.time()
     T_vals = torch.full((rays_o.size(0), 1), float("inf"), device="cuda") # Any non-intersections default to "inf" as their t value
@@ -142,15 +159,25 @@ def render_gaussian_model(gaussians: GaussianModel, model_params: ModelParams, o
     # TODO: Use opposite of t_min (t_max?) for creating chromesphere?
     # t_max parameter would need to become a tensor basically...kinda weird
     torch.cuda.empty_cache()
-    image = renderer.render(rendering_cam, gaussians, background) # (3, h, w)
+    base_image = renderer.render(rendering_cam, gaussians, background, include_depth=True) # (4, h, w)
+    color_image = base_image[:3, :, :] # (3, h, w)
+    depth_image = base_image[3, :, :] # (h, w)
 
     # Add bounce lighting to the image
-    masked_image = image * torch.isinf(T_vals) # Mask out part that hits the sphere
+    masked_image = color_image * torch.isinf(T_vals) # Mask out part that hits the sphere
     image = masked_image + bounce_image # Add in bounce lighting
-    
-    print(f"{image.shape}")
+
+
+    # debug_depth_image(model_params, camera_index, rays_o, rays_d, color_image, depth_image)
 
     print(f"Took {time.time()-st}s to render frame.")
+
+    # Save un-scaled base image for visualization
+    base_image = (torch.clamp(base_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy()
+
+    base_image = cv2.cvtColor(base_image, cv2.COLOR_BGR2RGB)
+
+    cv2.imwrite(Path(model_params.model_path) / f"base_image_camera_{camera_index}.png", base_image)
 
     # Convert to 8-bit and save as png
     image = (torch.clamp(image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy()
@@ -162,6 +189,32 @@ def render_gaussian_model(gaussians: GaussianModel, model_params: ModelParams, o
     
     torch.cuda.empty_cache()
     return image
+
+def debug_depth_image(model_params, camera_index, rays_o, rays_d, color_image, depth_image):
+    # Save depth map out in a few formats
+    clamped_depth = torch.clamp(depth_image.cpu(), min=0, max=100.0)
+
+    # Comparison with Original color image
+    plt.subplot(2, 1, 1)
+    plt.imshow(clamped_depth)
+    plt.colorbar()
+    plt.subplot(2, 1, 2)
+    plt.imshow((torch.clamp(color_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu())
+    plt.savefig(Path(model_params.model_path) / f"depth_output_camera_{camera_index}.png")
+
+    depth_vis = cv2.normalize(clamped_depth.numpy(), None, 0, 255, cv2.NORM_MINMAX)
+    depth_vis = np.uint8(depth_vis)
+    cv2.imwrite(Path(model_params.model_path) / f"raw_depth_{camera_index}.png", depth_vis)
+
+    # Raw number outputs, really cumbersome
+    # np.savetxt(Path(model_params.model_path) / f"depth_numbers_{camera_index}.txt", depth_image.cpu().numpy())
+
+
+    # Check if the depth map values are actual t values from the ray directions / origins
+    depth_image_unrolled = depth_image.reshape(-1, 1) # (h*w, 1)
+
+    xyz_points = rays_o + rays_d * depth_image_unrolled.to(device="cuda")
+    np.save(Path(model_params.model_path) / f"camera_pc_{camera_index}.npy", xyz_points.cpu().numpy())
 
 def plot_rays_and_sphere(rays_o: torch.Tensor, rays_d: torch.Tensor, sphere_center: torch.Tensor, sphere_radius: float, 
                          T_vals: torch.Tensor, bounce_ray_o: torch.Tensor, bounce_ray_d: torch.Tensor):
@@ -333,22 +386,32 @@ def get_rendering_cam(model_params: ModelParams, camera_index: int) -> MiniCam:
         # pos = W2C[:3, 3]
         # rot = W2C[:3, :3]
 
+        # TODO: Fixed values for rotation but for some reason the camera position is still inaccurate.
+        # Investigate eventually.
+
         world_to_camera = torch.zeros((4, 4))
-        world_to_camera[:3, 3] = torch.tensor(chosen_cam['position'])
+        world_to_camera[3, :3] = torch.tensor(chosen_cam['position'])
         world_to_camera[:3, :3] = torch.tensor(chosen_cam['rotation'])
         world_to_camera[3, 3] = 1.0
+
+        # Closer match to camera 1 (From manually inspecting Camera values from host_render_server)
+        hard_coded_w2c = torch.tensor([
+            [-9.9864e-01, -1.5685e-03,  5.2073e-02,  0.0000e+00],
+            [-2.6808e-02,  8.7253e-01, -4.8783e-01,  0.0000e+00],
+            [-4.4670e-02, -4.8856e-01, -8.7139e-01, -0.0000e+00],
+            [ 1.2334e-01,  5.3778e-02,  3.2802e+00,  1.0000e+00]])
 
         fovy = focal2fov(chosen_cam['fy'], chosen_cam['height'])
         fovx = focal2fov(chosen_cam['fx'], chosen_cam['width'])
 
-        world_view_transform = world_to_camera.transpose(0, 1).to(device="cuda")
+        world_view_transform = world_to_camera.to(device="cuda")
         z_near = 0.01
-        z_far = 100
+        z_far = 1000
         proj_matrix = getProjectionMatrix(znear=z_near, zfar=z_far, fovX=fovx, fovY=fovy).transpose(0,1).to(device="cuda")
         full_proj_transform = (world_view_transform.unsqueeze(0).bmm(proj_matrix.unsqueeze(0))).squeeze(0)
 
         rendering_cam = MiniCam(chosen_cam['width'], chosen_cam['height'], fovy, fovx, 
-                                0.01, 100, world_view_transform, full_proj_transform)
+                                z_near, z_far, world_view_transform, full_proj_transform)
         
         rendering_cam.model = ProjectionType.PERSPECTIVE
                                 

@@ -61,9 +61,11 @@ class FastRenderer:
         self.scales, self.density = pc.get_scale_and_density_for_rendering(self.per_point_2d_filter_scale, 1.0)
 
         # TODO: Temporary statefulness for normals that should have a better solution
-        self.normals = None
+        self.normals = torch.zeros_like(self.mean)
+        # self.normals = None
 
         # Store a running time_step variable for testing
+        # TODO: Should also be properly refactored.
         self.time_step = 0
 
         color = self.get_color(view)
@@ -127,7 +129,7 @@ class FastRenderer:
         features = RGB2SH(net_color).reshape(-1, 1, 3)
         return features.contiguous()
 
-    def get_rays(self, view):
+    def get_rays(self, view) -> tuple[torch.Tensor, torch.Tensor]:
         T = torch.linalg.inv(view.world_view_transform.T.cuda())
         rays_o, rays_d = get_rays(
             self.directions,
@@ -154,11 +156,17 @@ class FastRenderer:
                pc,
                bg_color: torch.Tensor,
                tmin=None,
-               scaling_modifier=1.0):
+               scaling_modifier=1.0,
+               include_depth=False):
         rays_o, rays_d = self.get_rays(view)
         out = self.trace_rays(rays_o, rays_d, view, self.pc.tmin if tmin is None else tmin, 1e7)
         iters = out['saved'].iters
-        rendered_image = out['color'][:, :3].T.reshape(3, view.image_height, view.image_width)
+
+        if include_depth:
+            # out['color'] has four channels normally (RGBDepth)
+            rendered_image = out['color'].T.reshape(4, view.image_height, view.image_width)
+        else:
+            rendered_image = out['color'][:, :3].T.reshape(3, view.image_height, view.image_width)
         return rendered_image
 
 
