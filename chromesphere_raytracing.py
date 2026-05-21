@@ -1,26 +1,24 @@
 # TODO: Load Gaussian Model, be able to render it with a basic camera position
 # From there, be able to intersect rays with a sphere, 
 
-import os
 from pathlib import Path
 import torch
 from random import randint
-from utils.loss_utils import l1_loss, ssim
+from raytracing import load_gaussian_model
+from utils.loss_utils import ssim
 import sys
 from scene import Scene, GaussianModel, camera_to_JSON
 from utils.general_utils import safe_state
 import uuid
 from tqdm import tqdm
 from utils.image_utils import psnr
-from argparse import ArgumentParser, Namespace
+from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, OptimizationParams
 from icecream import ic
 import random
 import math
 import cv2
 import json
-import traceback
-from utils.system_utils import searchForMaxIteration
 import time
 from gaussian_renderer.fast_renderer import FastRenderer
 from gaussian_renderer import render, network_gui
@@ -40,27 +38,7 @@ import slangtorch
 kernels = slangtorch.loadModule(
     str(Path(__file__).parent / "ever/splinetracers/slang/sphere_raytrace.slang")
 )
-def load_gaussian_model(model_params: ModelParams, opt_params: OptimizationParams, checkpoint: os.PathLike | None) -> GaussianModel:
-    first_iter = 0
-    gaussians = GaussianModel(model_params.sh_degree, model_params.use_neural_network, model_params.max_opacity)
-
-    if checkpoint is not None:
-        (gaussian_params, first_iter) = torch.load(checkpoint)
-        gaussians.restore(gaussian_params, opt_params)
-
-    # Search for a valid EVER-comaptible .ply
-    else:
-        loaded_iter = searchForMaxIteration(os.path.join(model_params.model_path, "point_cloud"))
-        print("Loading trained model at iteration {}".format(loaded_iter))
-
-        gaussians.load_ply(os.path.join(model_params.model_path,
-                                                       "point_cloud",
-                                                       "iteration_" + str(loaded_iter),
-                                                       "point_cloud.ply"))
-        
-    return gaussians
-
-def render_gaussian_model(gaussians: GaussianModel, model_params: ModelParams, opt_params: OptimizationParams, pipe_params: PipelineParams) -> torch.Tensor:
+def render_gaussian_model_and_chromesphere(gaussians: GaussianModel, model_params: ModelParams, opt_params: OptimizationParams, pipe_params: PipelineParams) -> torch.Tensor:
     bg_color = [1, 1, 1] if model_params.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
@@ -450,6 +428,6 @@ if __name__ == "__main__":
 
     print(f"Loaded Gaussian, Active SH Degree: {gaussians.active_sh_degree}")
 
-    render_gaussian_model(gaussians,lp.extract(args), op.extract(args), pp.extract(args))
+    render_gaussian_model_and_chromesphere(gaussians,lp.extract(args), op.extract(args), pp.extract(args))
 
     # All done
