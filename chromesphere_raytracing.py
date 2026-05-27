@@ -4,7 +4,7 @@
 from pathlib import Path
 import torch
 from random import randint
-from raytracing import load_gaussian_model
+from raytracing import get_rendering_cam, load_gaussian_model
 from utils.loss_utils import ssim
 import sys
 from scene import Scene, GaussianModel, camera_to_JSON
@@ -18,14 +18,10 @@ from icecream import ic
 import random
 import math
 import cv2
-import json
 import time
 from gaussian_renderer.fast_renderer import FastRenderer
 from gaussian_renderer import render, network_gui
-from scene.cameras import MiniCam
-from utils.graphics_utils import getWorld2View2, getProjectionMatrix, focal2fov
 
-from scene.dataset_readers import ProjectionType
 
 # Graphing
 import matplotlib
@@ -343,58 +339,6 @@ def bounce_off_sphere(ray_o: torch.Tensor, ray_d: torch.Tensor, t_vals: torch.Te
     reflected_rays = ray_d - 2 * hit_normal * (col_wise_dot_product(ray_d, hit_normal, keepdim=True))
 
     return hit_pos, reflected_rays
-
-
-
-def get_rendering_cam(model_params: ModelParams, camera_index: int) -> MiniCam:
-    camera_file = Path(model_params.model_path) / "cameras.json"
-    with open(camera_file) as f:
-        camera_arr = json.load(f)
-        # print(f"Cameras: {camera_arr}")
-        # print(f"Cameras[0]: {camera_arr[0]}")
-        chosen_cam = camera_arr[camera_index]
-
-        # Some more intermediate values:
-        # Rt = np.zeros((4, 4))
-        # Rt[:3, :3] = camera.R.transpose()
-        # Rt[:3, 3] = camera.T
-        # Rt[3, 3] = 1.0
-
-        # W2C = np.linalg.inv(Rt)
-        # pos = W2C[:3, 3]
-        # rot = W2C[:3, :3]
-
-        # TODO: Fixed values for rotation but for some reason the camera position is still inaccurate.
-        # Investigate eventually.
-
-        world_to_camera = torch.zeros((4, 4))
-        world_to_camera[3, :3] = torch.tensor(chosen_cam['position'])
-        world_to_camera[:3, :3] = torch.tensor(chosen_cam['rotation'])
-        world_to_camera[3, 3] = 1.0
-
-        # Closer match to camera 1 (From manually inspecting Camera values from host_render_server)
-        hard_coded_w2c = torch.tensor([
-            [-9.9864e-01, -1.5685e-03,  5.2073e-02,  0.0000e+00],
-            [-2.6808e-02,  8.7253e-01, -4.8783e-01,  0.0000e+00],
-            [-4.4670e-02, -4.8856e-01, -8.7139e-01, -0.0000e+00],
-            [ 1.2334e-01,  5.3778e-02,  3.2802e+00,  1.0000e+00]])
-
-        fovy = focal2fov(chosen_cam['fy'], chosen_cam['height'])
-        fovx = focal2fov(chosen_cam['fx'], chosen_cam['width'])
-
-        world_view_transform = world_to_camera.to(device="cuda")
-        z_near = 0.01
-        z_far = 1000
-        proj_matrix = getProjectionMatrix(znear=z_near, zfar=z_far, fovX=fovx, fovY=fovy).transpose(0,1).to(device="cuda")
-        full_proj_transform = (world_view_transform.unsqueeze(0).bmm(proj_matrix.unsqueeze(0))).squeeze(0)
-
-        rendering_cam = MiniCam(chosen_cam['width'], chosen_cam['height'], fovy, fovx, 
-                                z_near, z_far, world_view_transform, full_proj_transform)
-        
-        rendering_cam.model = ProjectionType.PERSPECTIVE
-                                
-    return rendering_cam
-
 
 
 

@@ -157,7 +157,10 @@ class FastRenderer:
                bg_color: torch.Tensor,
                tmin=None,
                scaling_modifier=1.0,
-               include_depth=False):
+               include_depth=False) -> torch.Tensor:
+        """
+        Returns a (channels x H x W) image.
+        """
         rays_o, rays_d = self.get_rays(view)
         out = self.trace_rays(rays_o, rays_d, view, self.pc.tmin if tmin is None else tmin, 1e7)
         iters = out['saved'].iters
