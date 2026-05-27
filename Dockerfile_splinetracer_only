@@ -18,3 +18,21 @@ EXPOSE 6009
 # By default, just start a shell in the 'ever' environment
 CMD ["/bin/bash", "-c", "source activate ever && exec bash"]
 
+
+# Add user for non-root VSCode DevContainer editing:
+# https://code.visualstudio.com/remote/advancedcontainers/add-nonroot-user
+# https://askubuntu.com/questions/1042313/ubuntu-command-history-not-available-for-newly-created-user
+ARG USERNAME=vscode
+ARG USER_UID=1000
+ARG USER_GID=$USER_UID
+
+# Create the user and add it to sudoers (modified from traditional VSCode Script)
+RUN adduser --uid $USER_UID $USERNAME \
+    && adduser $USERNAME sudo
+
+# ********************************************************
+# * Anything else you want to do like clean up goes here *
+# ********************************************************
+
+# [Optional] Set the default user. Omit if you want to keep the default as root.
+USER $USERNAME

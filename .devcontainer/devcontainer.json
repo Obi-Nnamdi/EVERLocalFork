@@ -1,6 +1,6 @@
 {
   "name": "EVER Devcontainer",
-  "image": "obinnamdi/ever:v1.1_full_build",
+  "image": "obinnamdi/ever:v1.1_full_build_vscode",
   "forwardPorts": [6006],
   "portsAttributes": {
     "6006": { "label": "ServerRenderer", "onAutoForward": "notify" }
@@ -22,7 +22,13 @@
     "/tmp/.X11-unix:/tmp/.X11-unix",
     "-e",
     "XAUTHORITY",
-    // "--privileged"
+    // Changed for MAC Display forwarding:
+    "-e",
+    "DISPLAY",
+    "--privileged",
+    // https://blog.yadutaf.fr/2017/09/10/running-a-graphical-app-in-a-docker-container-on-a-remote-server/
+    "-v",
+    "/home/nnamdi-obi/.Xauthority:/home/vscode/.Xauthority",
 
     // NEEDED for GUI Apps to work.
     "--network=host"
@@ -36,7 +42,10 @@
         "ms-python.python",
         "ms-python.vscode-pylance",
         "ms-toolsai.jupyter",
-        "shader-slang.slang-language-extension"
+        "shader-slang.slang-language-extension",
+        "ms-vscode.cpptools",
+        "eamodio.gitlens",
+        "ms-python.black-formatter"
       ],
       "settings": {
         "remote.localPortHost": "127.0.0.1",
