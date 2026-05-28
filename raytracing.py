@@ -112,7 +112,7 @@ def depth_map_to_xyz(
 
 
 def gather_incoming_light_at_point(
-    point: torch.Tensor, renderer: FastRenderer, camera: MiniCam, tmin=0.01
+    point: torch.Tensor, renderer: FastRenderer, tmin=0.01
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Spherical Queries for incoming light.
@@ -143,9 +143,7 @@ def gather_incoming_light_at_point(
     rays_o = point.to(device="cuda")
     rays_o = rays_o.expand(rays_d.shape).contiguous()
 
-    # TODO: Need to think more deeply about the camera paramter (i.e. what is used for "get_colors")
-    # or if it's even necessary and I should write a new function
-    probe_image = renderer.trace_rays(rays_o, rays_d, camera, tmin, 1e7)
+    probe_image = renderer.trace_rays_from_single_rayo(rays_o, rays_d, tmin, 1e7)
 
     # (N x 3) tensor since there's not much of an "image" here to coerce to 2D.
     return probe_image["color"][:, :3], rays_o, rays_d
@@ -307,7 +305,7 @@ if __name__ == "__main__":
 
     # Querying Spherical Directions
     incoming_light, rays_o, sphere_rays_d = gather_incoming_light_at_point(
-        xyz_map[chosen_point], renderer, rendering_cam, tmin=0.01
+        xyz_map[chosen_point], renderer, tmin=0.01
     )
 
     # TODO: Plot this

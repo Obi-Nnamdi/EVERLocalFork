@@ -89,7 +89,6 @@ class FastRenderer:
             directions = get_ray_directions(h, w, [fx, fy], random=False).cuda()  # (h, w, 3)
             self.directions = (directions / torch.norm(directions, dim=-1, keepdim=True))
 
-
     def get_color(self, view):
         shs = self.pc.get_features
         # shs[:, (self.pc.active_sh_degree+1)**2:] = 0
@@ -120,11 +119,38 @@ class FastRenderer:
 
             print(f"Took {end_time - start_time:.2f}s to calculate normals. (k = {normal_k})")
 
-
         print(f"Time Step: {self.time_step}")
-        net_color = eval_sh2(self.pc.get_xyz, shs, cam_pos, self.pc.active_sh_degree, normals=self.normals, time_step=self.time_step)
+        net_color = eval_sh2(
+            self.pc.get_xyz,
+            shs,
+            cam_pos,
+            self.pc.active_sh_degree,
+            normals=self.normals,
+            time_step=self.time_step,
+        )
         self.time_step += 1
         # ic(net_color, SH2RGB(features))
+        net_color = torch.nn.functional.softplus(net_color, beta=10)
+        features = RGB2SH(net_color).reshape(-1, 1, 3)
+        return features.contiguous()
+
+    def get_color_from_ray_origin(self, ray_o: torch.Tensor) -> torch.Tensor:
+        """
+        Run EvalSH functionality from manually specifying a ray origin in world space.
+
+        ray_o: (3,) Tensor.
+        """
+        shs = self.pc.get_features
+
+        net_color = eval_sh2(
+            self.pc.get_xyz,
+            shs,
+            ray_o,
+            self.pc.active_sh_degree,
+            normals=self.normals,
+            time_step=self.time_step,
+        )
+
         net_color = torch.nn.functional.softplus(net_color, beta=10)
         features = RGB2SH(net_color).reshape(-1, 1, 3)
         return features.contiguous()
@@ -138,13 +164,46 @@ class FastRenderer:
         rays_o = (rays_o).contiguous()
         return rays_o, rays_d
 
-    def trace_rays(self, rayo, rayd, view, tmin, tmax):
+    def trace_rays(self, rayo, rayd, view, tmin, tmax) -> dict[str, torch.Tensor]:
+        """
+        Traces rays using a group of ray origins and ray directions, as well as a specified camera
+        for evaluating Spherical Harmonics.
+
+        Returns a dictionary of fields:
+        "color", "saved", "tri_collection", "initial_drgb", "initial_touch_inds", "initial_touch_count"
+        """
         color = self.get_color(view)
         # prims = sp.Primitives(self.device)
         # half_attribs = torch.cat([self.mean, self.scales, self.quat], dim=1).half().contiguous()
         # prims.add_primitives(self.mean, self.scales, self.quat, half_attribs, self.density, color)
         # self.forward = sp.Forward(self.otx, self.device, prims, False)
 
+        print(f"{color.shape = }")
+        print(f"{self.pc.get_features.shape = }")
+
+        self.prims.set_features(color)
+        self.forward.update_model(self.prims)
+
+        out = self.forward.trace_rays(self.gas, rayo, rayd, tmin, tmax, MAX_ITERS, 1000)
+        return out
+
+    def trace_rays_from_single_rayo(
+        self, rayo: torch.Tensor, rayd: torch.Tensor, tmin: float, tmax: float
+    ) -> dict[str, torch.Tensor]:
+        """
+        Traces rays using a group of ray origins and ray directions.
+
+        Assumes ray origin is constant throughout and sets color from first rayo.
+
+        rayo: (N, 3)
+        rayd: (N, 3)
+
+        Returns a dictionary of fields (from py_binding.cpp):
+        "color", "saved", "tri_collection", "initial_drgb", "initial_touch_inds", "initial_touch_count"
+        """
+        color = self.get_color_from_ray_origin(rayo[0, :])
+
+        # Update primitive features before tracing.
         self.prims.set_features(color)
         self.forward.update_model(self.prims)
 
@@ -171,5 +230,3 @@ class FastRenderer:
         else:
             rendered_image = out['color'][:, :3].T.reshape(3, view.image_height, view.image_width)
         return rendered_image
-
-
