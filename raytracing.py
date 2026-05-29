@@ -199,21 +199,18 @@ def get_rendering_cam(model_params: ModelParams, camera_index: int) -> MiniCam:
 
         # TODO: Fixed values for rotation but for some reason the camera position is still inaccurate.
         # Investigate eventually (camera_utils.py).
+        rotation_matrix = torch.tensor(chosen_cam["rotation"])
 
         world_to_camera = torch.zeros((4, 4))
-        world_to_camera[3, :3] = torch.tensor(chosen_cam["position"])
-        world_to_camera[:3, :3] = torch.tensor(chosen_cam["rotation"])
-        world_to_camera[3, 3] = 1.0
+        # W2C Rotation
+        world_to_camera[:3, :3] = rotation_matrix
 
-        # Closer match to camera 1 (From manually inspecting Camera values from host_render_server)
-        hard_coded_w2c = torch.tensor(
-            [
-                [-9.9864e-01, -1.5685e-03, 5.2073e-02, 0.0000e00],
-                [-2.6808e-02, 8.7253e-01, -4.8783e-01, 0.0000e00],
-                [-4.4670e-02, -4.8856e-01, -8.7139e-01, -0.0000e00],
-                [1.2334e-01, 5.3778e-02, 3.2802e00, 1.0000e00],
-            ]
+        # Change coordinate frame of position properly by using rotation matrix and inverting (take negative)
+        world_to_camera[3, :3] = -(
+            torch.linalg.inv(rotation_matrix)
+            @ torch.torch.tensor(chosen_cam["position"])
         )
+        world_to_camera[3, 3] = 1.0
 
         fovy = focal2fov(chosen_cam["fy"], chosen_cam["height"])
         fovx = focal2fov(chosen_cam["fx"], chosen_cam["width"])
@@ -311,14 +308,14 @@ if __name__ == "__main__":
     rays_o, rays_d = renderer.get_rays(rendering_cam)
     xyz_map = depth_map_to_xyz(rays_o, rays_d, depth_map)
 
-    chosen_point = (742, 416)  # Should be on a flower in bottom left of img
+    chosen_point = (145, 511)  # Should be on the very top flower
 
     # Querying Spherical Directions
     incoming_light, rays_o, sphere_rays_d = gather_incoming_light_at_point(
         xyz_map[chosen_point], renderer, tmin=0.01
     )
 
-    # TODO: Plot this
+    # Plotting incoming light
     sphere_rays_d = sphere_rays_d.cpu()
     fig = plt.figure()
     ax = fig.add_subplot(projection="3d")
