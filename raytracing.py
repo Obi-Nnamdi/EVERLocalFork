@@ -117,36 +117,47 @@ def gather_incoming_light_at_point(
     """
     Spherical Queries for incoming light.
 
-    Color returned as an N x 3 tensor.
+    Color, Ray Origins, and Ray directions returned as N x 3 tensors.
     """
-    # torch.cuda.empty_cache()
-    # Make sphere ray directions (https://matplotlib.org/stable/gallery/mplot3d/surface3d_2.html)
-    # TODO: Research better method
-    # TODO: Should this be spherical or hemispherical?
-    # TODO: Do I need to check for unique points?
 
-    # Use a sphere centered at the origin to build the ray directions as a hemisphere query
+    # torch.cuda.empty_cache()
+    # TODO: Research better method
+    # TODO: Should this be spherical or hemispherical? (spherical for now, hemispherical would be best w/ normals)
+
+    rays_d, rays_o = generate_spherical_rays(point)
+    probe_image = renderer.trace_rays_from_single_rayo(rays_o, rays_d, tmin, 1e7)
+
+    # (N x 3) tensor since there's not much of an "image" here to coerce to 2D.
+    return probe_image["color"][:, :3], rays_o, rays_d
+
+
+def generate_spherical_rays(point: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Use a sphere centered at the origin to build the ray directions as a hemisphere query
+    Parametric Eq for sphere (https://math.stackexchange.com/questions/150937/derive-parametric-equations-for-sphere):
+    x = rcos(theta)sin(phi)
+    y = rsin(theta)sin(phi)
+    z = rcos(theta)
+    theta from 0 -> 2pi, phi from 0 -> pi
+
+    Code adapted from https://matplotlib.org/stable/gallery/mplot3d/surface3d_2.html.
+    """
     radius = 1
     probe_divisions = 10
     u = torch.linspace(0, 2 * torch.pi, probe_divisions)
     v = torch.linspace(0, torch.pi, probe_divisions)
     x = radius * torch.outer(torch.cos(u), torch.sin(v)).reshape(-1, 1)
     y = radius * torch.outer(torch.sin(u), torch.sin(v)).reshape(-1, 1)
-    z = radius * torch.outer(torch.ones_like(u), torch.cos(v)).ravel().reshape(-1, 1)
-
-    # print(f"{x.shape = }")
-    # print(f"{x = }")
+    z = radius * torch.outer(torch.ones_like(u), torch.cos(v)).reshape(-1, 1)
 
     # No normalization needed
-    rays_d = torch.hstack((x, y, z)).to(device="cuda")
+    rays_d = torch.hstack((x, y, z))
+    # Get unique directions
+    rays_d = torch.unique(rays_d, dim=0).to(device="cuda")
 
     rays_o = point.to(device="cuda")
     rays_o = rays_o.expand(rays_d.shape).contiguous()
-
-    probe_image = renderer.trace_rays_from_single_rayo(rays_o, rays_d, tmin, 1e7)
-
-    # (N x 3) tensor since there's not much of an "image" here to coerce to 2D.
-    return probe_image["color"][:, :3], rays_o, rays_d
+    return rays_d, rays_o
 
 
 def save_rgb_image(
@@ -300,8 +311,7 @@ if __name__ == "__main__":
     rays_o, rays_d = renderer.get_rays(rendering_cam)
     xyz_map = depth_map_to_xyz(rays_o, rays_d, depth_map)
 
-    chosen_point = (742, 416)  # Should be on a flower
-    print(f"{xyz_map[chosen_point] = }")
+    chosen_point = (742, 416)  # Should be on a flower in bottom left of img
 
     # Querying Spherical Directions
     incoming_light, rays_o, sphere_rays_d = gather_incoming_light_at_point(

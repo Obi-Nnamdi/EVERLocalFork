@@ -27,6 +27,7 @@ from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, get_combined_args, OptimizationParams
 from gaussian_renderer import GaussianModel
 import time
+from typing import TypedDict, Any
 
 from utils.sh_utils import eval_sh, RGB2SH, SH2RGB
 from ever.splinetracers.fast_ellipsoid_splinetracer import sp
@@ -37,6 +38,16 @@ from scene.dataset_readers import ProjectionType
 
 
 MAX_ITERS = 200
+
+
+class TraceRayOutput(TypedDict):
+    color: torch.Tensor
+    saved: Any
+    tri_collection: torch.Tensor
+    initial_drgb: torch.Tensor
+    initial_touch_inds: torch.Tensor
+    initial_touch_count: torch.Tensor
+
 
 class FastRenderer:
     def __init__(self, view, pc, enable_GLO):
@@ -164,7 +175,7 @@ class FastRenderer:
         rays_o = (rays_o).contiguous()
         return rays_o, rays_d
 
-    def trace_rays(self, rayo, rayd, view, tmin, tmax) -> dict[str, torch.Tensor]:
+    def trace_rays(self, rayo, rayd, view, tmin, tmax) -> TraceRayOutput:
         """
         Traces rays using a group of ray origins and ray directions, as well as a specified camera
         for evaluating Spherical Harmonics.
@@ -172,15 +183,13 @@ class FastRenderer:
         Returns a dictionary of fields:
         "color", "saved", "tri_collection", "initial_drgb", "initial_touch_inds", "initial_touch_count"
         """
-        color = self.get_color(view)
+        color = self.get_color(view)  # (N, 1, 3)
+        # Note that original SH features (from self.pc.get_features) have shape (N, 16, 3) with all harmonics
+
         # prims = sp.Primitives(self.device)
         # half_attribs = torch.cat([self.mean, self.scales, self.quat], dim=1).half().contiguous()
         # prims.add_primitives(self.mean, self.scales, self.quat, half_attribs, self.density, color)
         # self.forward = sp.Forward(self.otx, self.device, prims, False)
-
-        print(f"{color.shape = }")
-        print(f"{self.pc.get_features.shape = }")
-
         self.prims.set_features(color)
         self.forward.update_model(self.prims)
 
@@ -189,7 +198,7 @@ class FastRenderer:
 
     def trace_rays_from_single_rayo(
         self, rayo: torch.Tensor, rayd: torch.Tensor, tmin: float, tmax: float
-    ) -> dict[str, torch.Tensor]:
+    ) -> TraceRayOutput:
         """
         Traces rays using a group of ray origins and ray directions.
 
