@@ -11,8 +11,10 @@ from raytracing import (
 from utils.general_utils import safe_state
 import sys
 
+from scene.cameras import MiniCam
+from gaussian_renderer.ever import get_ray_directions
 import torch
-
+import math
 
 class Blinn_Phong_BRDF:
     """
@@ -147,6 +149,51 @@ class Blinn_Phong_BRDF:
         return torch.mean(full_lighting, dim=0)
 
 
+def transform_normals_to_world_space(
+    camera_normals: torch.Tensor, camera: MiniCam
+) -> torch.Tensor:
+    """
+    Inputs:
+        camera_normals: (N, 3) normal directions in camera space
+        camera: MiniCam object representing the camera.
+
+    Outputs:
+        world_normal: (N, 3) normal directions in world space
+    """
+    # Pulling code from "get_rays" in gaussian_renderer/ever.py.
+    world_to_camera_rot = camera.world_view_transform[:3, :3]
+
+    camera_to_world_rot = world_to_camera_rot.T
+
+    # No scaling component of the camera to world matrix, can simply rotate the ray directions
+    # without worrying about normal scaling issues
+    world_normals = camera_normals @ camera_to_world_rot
+
+    return world_normals
+
+
+def test_normal_transformation(view: MiniCam, rays_d: torch.Tensor):
+    """
+    Compare the output of `transform_normals_to_world_space` to the actual camera rays used to render.
+    Mainly just a sanity check.
+    """
+    # Adapted from "camera2rays" in gaussian_renderer/ever.py
+    w = view.image_width
+    h = view.image_height
+
+    fx = 0.5 * w / math.tan(0.5 * view.FoVx)  # original focal length
+    fy = 0.5 * h / math.tan(0.5 * view.FoVy)  # original focal length
+    directions = get_ray_directions(h, w, [fx, fy]).cuda()
+    directions = directions / torch.norm(directions, dim=-1, keepdim=True)
+    directions = directions.view(-1, 3)
+
+    transformed_directions = transform_normals_to_world_space(directions, rendering_cam)
+
+    print(f"{directions[0:10] = }")
+    print(f"{transformed_directions[0:10] = }")
+    print(f"{rays_d[0:10] = }")
+
+
 if __name__ == "__main__":
     # Set up command line argument parser
     parser = ArgumentParser(description="Manual Renderer Parameters")
@@ -234,10 +281,13 @@ if __name__ == "__main__":
     )
     learned_brdf = Blinn_Phong_BRDF()
 
-    normal = torch.tensor([0, 0, 1]).cuda()
+    normal = torch.tensor([0, 0, 1.0]).reshape(1, 3).cuda()
+    world_normal = transform_normals_to_world_space(normal, rendering_cam)
+
+    # test_normal_transformation(transform_normals_to_world_space, rendering_cam, rays_d)
 
     outgoing_radiance = learned_brdf.construct_outgoing_radiance(
-        incoming_light, incoming_light_dirs, outgoing_dir, normal
+        incoming_light, incoming_light_dirs, outgoing_dir, world_normal
     )
 
     print(f"{outgoing_radiance = }")
