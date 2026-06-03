@@ -112,7 +112,10 @@ def depth_map_to_xyz(
 
 
 def gather_incoming_light_at_point(
-    point: torch.Tensor, renderer: FastRenderer, tmin=0.01
+    point: torch.Tensor,
+    renderer: FastRenderer,
+    tmin=0.01,
+    sphere_divisions=10,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Spherical Queries for incoming light.
@@ -124,14 +127,16 @@ def gather_incoming_light_at_point(
     # TODO: Research better method
     # TODO: Should this be spherical or hemispherical? (spherical for now, hemispherical would be best w/ normals)
 
-    rays_d, rays_o = generate_spherical_rays(point)
+    rays_d, rays_o = generate_spherical_rays(point, divisions=sphere_divisions)
     probe_image = renderer.trace_rays_from_single_rayo(rays_o, rays_d, tmin, 1e7)
 
     # (N x 3) tensor since there's not much of an "image" here to coerce to 2D.
     return probe_image["color"][:, :3], rays_o, rays_d
 
 
-def generate_spherical_rays(point: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+def generate_spherical_rays(
+    point: torch.Tensor, divisions=10
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Use a sphere centered at the origin to build the ray directions as a hemisphere query
     Parametric Eq for sphere (https://math.stackexchange.com/questions/150937/derive-parametric-equations-for-sphere):
@@ -143,17 +148,27 @@ def generate_spherical_rays(point: torch.Tensor) -> tuple[torch.Tensor, torch.Te
     Code adapted from https://matplotlib.org/stable/gallery/mplot3d/surface3d_2.html.
     """
     radius = 1
-    probe_divisions = 10
-    u = torch.linspace(0, 2 * torch.pi, probe_divisions)
-    v = torch.linspace(0, torch.pi, probe_divisions)
-    x = radius * torch.outer(torch.cos(u), torch.sin(v)).reshape(-1, 1)
-    y = radius * torch.outer(torch.sin(u), torch.sin(v)).reshape(-1, 1)
-    z = radius * torch.outer(torch.ones_like(u), torch.cos(v)).reshape(-1, 1)
+    u = torch.linspace(0, 2 * torch.pi, divisions)
+    v = torch.linspace(0, torch.pi, divisions)
+
+    clamp_to_zero = lambda tensor: torch.where(torch.abs(tensor) < 1e-6, 0, tensor)
+
+    # Clamp small values to 0s (1s are fine from inspection)
+    sin_u = clamp_to_zero(torch.sin(u))
+    sin_v = clamp_to_zero(torch.sin(v))
+    cos_u = clamp_to_zero(torch.cos(u))
+    cos_v = clamp_to_zero(torch.cos(v))
+    x = radius * torch.outer(cos_u, sin_v).reshape(-1, 1)
+    y = radius * torch.outer(sin_u, sin_v).reshape(-1, 1)
+    z = radius * torch.outer(torch.ones_like(u), cos_v).reshape(-1, 1)
 
     # No normalization needed
     rays_d = torch.hstack((x, y, z))
+
     # Get unique directions
-    rays_d = torch.unique(rays_d, dim=0).to(device="cuda")
+    # TODO: Might be nice to look into a more foolproof way to do this
+    rays_d = torch.unique(rays_d, dim=0)
+    rays_d = rays_d.cuda()
 
     rays_o = point.to(device="cuda")
     rays_o = rays_o.expand(rays_d.shape).contiguous()
