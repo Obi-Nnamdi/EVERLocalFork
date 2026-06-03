@@ -14,8 +14,10 @@ import sys
 from scene.cameras import MiniCam
 from gaussian_renderer.ever import get_ray_directions
 import torch
+from torch import nn
 import math
 
+# TODO: Could be turned into a more general BRDF class when implementing more complex models
 class Blinn_Phong_BRDF:
     """
     Implemented from here: https://rodolphe-vaillant.fr/entry/85/phong-illumination-model-cheat-sheet
@@ -152,6 +154,29 @@ class Blinn_Phong_BRDF:
         return torch.mean(full_lighting, dim=0)
 
 
+class BRDF_normal_predictor(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        # TODO: Define basic architecture
+        # TODO: support multiple types of BRDFs eventually?
+
+    def forward(
+        self, image: torch.Tensor, incoming_light: torch.Tensor
+    ) -> dict[str, torch.Tensor]:
+        # TODO: refine arguments
+        # Best way to structure this...all as one tensor or as multiple?
+        output_dict = {
+            "brdf": {
+                "diffuse": torch.Tensor([1.0, 0.0, 0.0]).cuda(),
+                # RGB + specular C
+                "specular": torch.Tensor([0.0, 1.0, 0.0, 2.0]).cuda(),
+            },
+            "normal": torch.Tensor([0.0, 0.0, 1.0]),
+        }
+
+        return output_dict
+
+
 def transform_normals_to_world_space(
     camera_normals: torch.Tensor, camera: MiniCam
 ) -> torch.Tensor:
@@ -283,9 +308,12 @@ if __name__ == "__main__":
         (camera_pos - xyz_map[chosen_point]).reshape(1, 3)
     )
 
-    Kd = torch.Tensor([1.0, 0, 0]).cuda()
-    Ks = torch.Tensor([0, 1.0, 0]).cuda()
-    spec_c = torch.tensor([2.0]).cuda()
+    normal_predictor = BRDF_normal_predictor()
+    output = normal_predictor(rendered_image, incoming_light)
+
+    Kd = output["brdf"]["diffuse"]
+    Ks = output["brdf"]["specular"][:3]
+    spec_c = output["brdf"]["specular"][3]
 
     learned_brdf = Blinn_Phong_BRDF(Kd, Ks, spec_c)
     normal = torch.tensor([0, 0, 1.0]).reshape(1, 3).cuda()
@@ -300,8 +328,10 @@ if __name__ == "__main__":
     print(f"{outgoing_radiance = }")
 
     print(f"{outgoing_radiance - rendered_color = }")
-    # print(f"{guessed_color = }")
 
     # TODO: Calculate loss and such...
+    loss_fn = nn.MSELoss()
+    loss = loss_fn(outgoing_radiance, rendered_color)
+    print(f"{loss = }")
 
     # All done
