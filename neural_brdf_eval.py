@@ -1,0 +1,250 @@
+from arguments import ModelParams, PipelineParams, OptimizationParams
+from argparse import ArgumentParser
+from raytracing import (
+    build_gaussian_renderer,
+    depth_map_to_xyz,
+    gather_incoming_light_at_point,
+    get_rendering_cam,
+    load_gaussian_model,
+    render_gaussians,
+)
+from utils.general_utils import safe_state
+import sys
+
+import torch
+
+
+class Blinn_Phong_BRDF:
+    """
+    Implemented from here: https://rodolphe-vaillant.fr/entry/85/phong-illumination-model-cheat-sheet
+    """
+
+    def __init__(self) -> None:
+        self.Kd = torch.Tensor([1.0, 0, 0]).cuda()
+        self.Ks = torch.Tensor([0, 1.0, 0]).cuda()
+        # Control spectular reflection size
+        self.spec_reflect_c = 2.0
+        self.Ka = [0.0, 0.0, 0.0]
+
+    def compute_diffuse(
+        self,
+        incoming_light: torch.Tensor,
+        incoming_light_dirs: torch.Tensor,
+        normal: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        incoming_light: (N, 3) R,G,B values of incoming light for each direction
+        incoming_light_dirs: (N, 3) Directions oriented towards the light source in world space
+        normal: (1, 3) Surface normal in world space
+        """
+
+        # Compute dot products of normal and all light directions
+        diffuse_term = torch.sum(
+            incoming_light_dirs * normal, dim=1, keepdim=True
+        )  # (N, 1)
+
+        # TODO: Don't want negative dot product values (light directions are spherical), but I'm choosing to not clamp for now
+        # (could uncomment this line, but I assume everything passed in has a positive dot product)
+        # light_intensity_dot_products = torch.clamp(light_intensity_dot_products, min = 0)
+
+        # Combine diffuse color of material with the incoming light
+        diffuse_intensity = self.Kd * incoming_light  # (N, 3)
+
+        # Final Diffuse colors for each light source
+        return diffuse_term * diffuse_intensity
+
+    def compute_specular(
+        self,
+        incoming_light: torch.Tensor,
+        incoming_light_dirs: torch.Tensor,
+        normal: torch.Tensor,
+        outgoing_dir: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Uses Blinn model of specular reflection.
+
+        incoming_light: (N, 3) R,G,B values of incoming light for each direction
+        incoming_light_dirs: (N, 3) Directions oriented towards the light source in world space
+        normal: (1, 3) Surface normal in world space
+        outgoing_dir: (1, 3) Outgoing (view) direction of radiance, in world space (head at the camera, tip at the surface point)
+        """
+
+        # Compute specular term
+        halfway_vecs = torch.nn.functional.normalize(
+            (incoming_light_dirs + outgoing_dir)
+        )  # (N, 3)
+
+        print(f"{halfway_vecs = }")
+        specular_term = torch.pow(
+            torch.sum(halfway_vecs * normal, dim=1, keepdim=True), self.spec_reflect_c
+        )  # (N, 1)
+
+        # TODO: Don't want negative dot product values (light directions are spherical), but I'm choosing to not clamp for now
+        # (could uncomment this line, but I assume everything passed in has a positive dot product)
+        # light_intensity_dot_products = torch.clamp(light_intensity_dot_products, min = 0)
+
+        # Combine diffuse color of material with the incoming light
+        specular_intensity = self.Ks * incoming_light  # (N, 3)
+
+        # Final Diffuse colors for each light source
+        return specular_term * specular_intensity
+
+    # TODO: Construct as a general function
+    def construct_outgoing_radiance(
+        self,
+        incoming_light: torch.Tensor,
+        incoming_light_dirs: torch.Tensor,
+        outgoing_dir: torch.Tensor,
+        normal_dir: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Returns color as a (3,) tensor.
+
+        Sources:
+
+        https://en.wikipedia.org/wiki/Rendering_equation
+        https://15462.courses.cs.cmu.edu/spring2024content/lectures/15_brdfs/15_brdfs_slides.pdf
+        https://www.scratchapixel.com/lessons/3d-basic-rendering/phong-shader-BRDF/phong-illumination-models-brdf.html
+        """
+        # Compute light attenuation based on viewing direction as found in rendering equation
+        # <w_i, n>
+        light_weakening_factors = torch.sum(incoming_light_dirs * normal_dir, dim=1)
+
+        # Only choose light sources that are on the same side as the surface normal:
+        # I guess averaging should be done across all positive surface-normal * light direction dot products?
+        positive_light_contributions = light_weakening_factors >= 0
+
+        relevant_incoming_light = incoming_light[positive_light_contributions, :]
+        relevant_incoming_light_dirs = incoming_light_dirs[
+            positive_light_contributions, :
+        ]
+
+        # TODO: is this needed?
+        relevant_light_weakening_factors = light_weakening_factors[positive_light_contributions]
+
+        # print(f"{relevant_incoming_light = }")
+        # print(f"{relevant_incoming_light_dirs = }")
+
+        diffuse_component = self.compute_diffuse(
+            relevant_incoming_light, relevant_incoming_light_dirs, normal_dir
+        )
+        specular_component = self.compute_specular(
+            relevant_incoming_light,
+            relevant_incoming_light_dirs,
+            normal_dir,
+            outgoing_dir,
+        )
+
+        # TODO: Proper intergration of diffuse and specular terms across all the lights? Should I just average?
+        # Should I take weighted average w/ something else? (i.e. normal weighting)
+
+        # Simple Diffuse + Specular combination
+        full_lighting = diffuse_component + specular_component
+
+        # Average result to get our output
+        # TODO: Might be worth looking into the dw_i term in the rendering equation and maybe thinking of just multipling a sort of area patch term?
+        # Really not sure
+        return torch.mean(full_lighting, dim=0)
+
+
+if __name__ == "__main__":
+    # Set up command line argument parser
+    parser = ArgumentParser(description="Manual Renderer Parameters")
+    lp = ModelParams(parser)
+    op = OptimizationParams(parser)
+    pp = PipelineParams(parser)
+    parser.add_argument("--ip", type=str, default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=6009)
+    parser.add_argument("--debug_from", type=int, default=-1)
+    parser.add_argument("--detect_anomaly", action="store_true", default=False)
+    parser.add_argument(
+        "--test_iterations", nargs="+", type=int, default=[7_000, 30_000]
+    )
+    parser.add_argument(
+        "--save_iterations", nargs="+", type=int, default=[7_000, 30_000]
+    )
+    parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
+    parser.add_argument("--start_checkpoint", type=str, default=None)
+    args = parser.parse_args(sys.argv[1:])
+    args.save_iterations.append(args.iterations)
+    # args.checkpoint_iterations.append(args.iterations)
+
+    print("Optimizing " + args.model_path)
+
+    # Initialize system state (RNG)
+    safe_state(args.quiet)
+
+    # Load Gaussians
+    model_params: ModelParams = lp.extract(args)
+
+    torch.autograd.set_detect_anomaly(args.detect_anomaly)
+    gaussians = load_gaussian_model(
+        model_params, op.extract(args), args.start_checkpoint
+    )
+    print(f"Loaded Gaussian, Active SH Degree: {gaussians.active_sh_degree}")
+
+    camera_index = 1
+    rendering_cam = get_rendering_cam(model_params, camera_index)
+
+    # Reduce Camera resolution
+    preview_factor = 4
+    image_width = rendering_cam.image_width
+    image_height = rendering_cam.image_height
+
+    rendering_cam.image_width = image_width // preview_factor
+    rendering_cam.image_height = image_height // preview_factor
+
+    # Build Renderer and Render
+    renderer = build_gaussian_renderer(gaussians, rendering_cam, pp.extract(args))
+    rendered_image = render_gaussians(renderer, rendering_cam, None, include_depth=True)
+    print("Rendered Image.")
+
+    # Separate RGB and Depth Images
+    rgb_image = rendered_image[:3, :, :].permute(1, 2, 0)  # (H, W, C)
+    depth_map = rendered_image[3, :, :]  # (H, W)
+
+    chosen_point = (0, 0)
+
+    rendered_color = rgb_image[chosen_point]
+    print(f"Color at {chosen_point}: {rendered_color}")
+
+    # Get Incoming Light
+    # TODO: How to handle any t_max occurences? Will have to look into that
+    # since this alone doesn't work (maybe a threshold?).
+    # print("T_MAX Depth Map:")
+    # print(torch.sum(depth_map == 1e7))
+    # TODO: Maybe simplify into another helper?
+    rays_o, rays_d = renderer.get_rays(rendering_cam)
+    xyz_map = depth_map_to_xyz(rays_o, rays_d, depth_map)
+
+    # Querying Spherical Directions
+    incoming_light, _, incoming_light_dirs = gather_incoming_light_at_point(
+        xyz_map[chosen_point], renderer, tmin=0.01, sphere_divisions=4
+    )
+
+    print(f"{incoming_light = }")
+    print(f"{incoming_light_dirs = }")
+
+    # BRDF reconstruction - basic Diffuse BRDF with albedo
+    camera_pos = rays_o[0, :]  # (3,)
+
+    outgoing_dir = torch.nn.functional.normalize(
+        (camera_pos - xyz_map[chosen_point]).reshape(1, 3)
+    )
+    learned_brdf = Blinn_Phong_BRDF()
+
+    normal = torch.tensor([0, 0, 1]).cuda()
+
+    outgoing_radiance = learned_brdf.construct_outgoing_radiance(
+        incoming_light, incoming_light_dirs, outgoing_dir, normal
+    )
+
+    print(f"{outgoing_radiance = }")
+
+    print(f"{outgoing_radiance - rendered_color}")
+    # print(f"{guessed_color = }")
+
+    # TODO: Calculate loss and such...
+
+    # All done
