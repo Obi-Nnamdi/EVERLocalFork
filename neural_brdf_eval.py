@@ -21,12 +21,16 @@ class Blinn_Phong_BRDF:
     Implemented from here: https://rodolphe-vaillant.fr/entry/85/phong-illumination-model-cheat-sheet
     """
 
-    def __init__(self) -> None:
-        self.Kd = torch.Tensor([1.0, 0, 0]).cuda()
-        self.Ks = torch.Tensor([0, 1.0, 0]).cuda()
+    def __init__(
+        self, Kd: torch.Tensor, Ks: torch.Tensor, spec_reflect_c: torch.Tensor
+    ) -> None:
+        """
+        Initialize a Blinn Phong BRDF with Diffuse, Specular, and specular reflection size values.
+        """
+        self.Kd = Kd
+        self.Ks = Ks
         # Control spectular reflection size
-        self.spec_reflect_c = 2.0
-        self.Ka = [0.0, 0.0, 0.0]
+        self.spec_reflect_c = spec_reflect_c
 
     def compute_diffuse(
         self,
@@ -76,7 +80,6 @@ class Blinn_Phong_BRDF:
             (incoming_light_dirs + outgoing_dir)
         )  # (N, 3)
 
-        print(f"{halfway_vecs = }")
         specular_term = torch.pow(
             torch.sum(halfway_vecs * normal, dim=1, keepdim=True), self.spec_reflect_c
         )  # (N, 1)
@@ -270,8 +273,8 @@ if __name__ == "__main__":
         xyz_map[chosen_point], renderer, tmin=0.01, sphere_divisions=4
     )
 
-    print(f"{incoming_light = }")
-    print(f"{incoming_light_dirs = }")
+    # print(f"{incoming_light = }")
+    # print(f"{incoming_light_dirs = }")
 
     # BRDF reconstruction - basic Diffuse BRDF with albedo
     camera_pos = rays_o[0, :]  # (3,)
@@ -279,8 +282,12 @@ if __name__ == "__main__":
     outgoing_dir = torch.nn.functional.normalize(
         (camera_pos - xyz_map[chosen_point]).reshape(1, 3)
     )
-    learned_brdf = Blinn_Phong_BRDF()
 
+    Kd = torch.Tensor([1.0, 0, 0]).cuda()
+    Ks = torch.Tensor([0, 1.0, 0]).cuda()
+    spec_c = torch.tensor([2.0]).cuda()
+
+    learned_brdf = Blinn_Phong_BRDF(Kd, Ks, spec_c)
     normal = torch.tensor([0, 0, 1.0]).reshape(1, 3).cuda()
     world_normal = transform_normals_to_world_space(normal, rendering_cam)
 
@@ -292,7 +299,7 @@ if __name__ == "__main__":
 
     print(f"{outgoing_radiance = }")
 
-    print(f"{outgoing_radiance - rendered_color}")
+    print(f"{outgoing_radiance - rendered_color = }")
     # print(f"{guessed_color = }")
 
     # TODO: Calculate loss and such...
