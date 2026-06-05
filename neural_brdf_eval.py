@@ -155,23 +155,92 @@ class Blinn_Phong_BRDF:
 
 
 class BRDF_normal_predictor(nn.Module):
-    def __init__(self) -> None:
+
+    def __init__(
+        self, img_height: int, img_width: int, incoming_light_size: int
+    ) -> None:
         super().__init__()
+
+        # Take in an RGB-D image and run multiple conv-net layers on it
+        # TODO: Add dropouts, pooling, etc.
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(in_channels=4, out_channels=28, kernel_size=3, padding="same"),
+            nn.ReLU(),
+        )
+
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(in_channels=28, out_channels=4, kernel_size=3, padding="same"),
+            nn.ReLU(),
+        )
         # TODO: Define basic architecture
+
+        self.img_height = img_height
+        self.img_width = img_width
+        self.incoming_light_size = incoming_light_size
+
+        self.diffuse_brdf_size = 3
+        self.spec_brdf_size = 4
+        self.normal_size = 3
+
+        # One network for the BRDFs, another for the normals.
+        self.fc1 = nn.Sequential(
+            nn.Linear(
+                in_features=(self.img_height * self.img_width * 4)
+                + self.incoming_light_size,
+                out_features=self.diffuse_brdf_size + self.spec_brdf_size,
+            ),
+            nn.Softplus(beta=10),
+        )
+
+        self.fc2 = nn.Sequential(
+            nn.Linear(
+                in_features=(self.img_height * self.img_width * 4)
+                + self.incoming_light_size,
+                out_features=self.normal_size,
+            )
+        )
         # TODO: support multiple types of BRDFs eventually?
 
     def forward(
         self, image: torch.Tensor, incoming_light: torch.Tensor
     ) -> dict[str, torch.Tensor]:
+        """
+        Input:
+            image: (N, C, H, W)
+            incoming_light: (R, C) for one point
+            TODO: support incoming light for multiple points?
+
+        """
+
+        img_features = self.conv1(image)
+        img_features = self.conv2(img_features)
+
+        img_features = img_features.reshape(1, -1)  # (N, C * H * W)
+
+        # Concatenate incoming light to be used for MLP
+        # There's only one pixel so for now this is how it's being used,
+        # But should be explored how to improve this.
+        # TODO: Transform incoming light in some way?
+        img_and_light_features = torch.cat(
+            [img_features, incoming_light.reshape(1, -1)], dim=1
+        )
+
+        brdf_predictions = self.fc1(img_and_light_features)
+        normal_predictions = self.fc2(img_and_light_features)
+
         # TODO: refine arguments
         # Best way to structure this...all as one tensor or as multiple?
         output_dict = {
             "brdf": {
-                "diffuse": torch.Tensor([1.0, 0.0, 0.0]).cuda(),
+                "diffuse": brdf_predictions[:, : self.diffuse_brdf_size],
                 # RGB + specular C
-                "specular": torch.Tensor([0.0, 1.0, 0.0, 2.0]).cuda(),
+                "specular": brdf_predictions[
+                    :,
+                    self.diffuse_brdf_size : self.diffuse_brdf_size
+                    + self.spec_brdf_size,
+                ],
             },
-            "normal": torch.Tensor([0.0, 0.0, 1.0]),
+            "normal": normal_predictions,
         }
 
         return output_dict
@@ -272,7 +341,9 @@ if __name__ == "__main__":
 
     # Build Renderer and Render
     renderer = build_gaussian_renderer(gaussians, rendering_cam, pp.extract(args))
-    rendered_image = render_gaussians(renderer, rendering_cam, None, include_depth=True)
+    rendered_image = render_gaussians(
+        renderer, rendering_cam, None, include_depth=True
+    )  # (C, H, W)
     print("Rendered Image.")
 
     # Separate RGB and Depth Images
@@ -308,15 +379,23 @@ if __name__ == "__main__":
         (camera_pos - xyz_map[chosen_point]).reshape(1, 3)
     )
 
-    normal_predictor = BRDF_normal_predictor()
-    output = normal_predictor(rendered_image, incoming_light)
+    normal_predictor = BRDF_normal_predictor(
+        rendering_cam.image_height,
+        rendering_cam.image_width,
+        incoming_light.size(0) * incoming_light.size(1),
+    )
+    normal_predictor = normal_predictor.cuda()
+    output = normal_predictor(rendered_image.unsqueeze(0), incoming_light)
 
     Kd = output["brdf"]["diffuse"]
-    Ks = output["brdf"]["specular"][:3]
-    spec_c = output["brdf"]["specular"][3]
+    Ks = output["brdf"]["specular"][:, :3]
+    spec_c = output["brdf"]["specular"][:, 3]
+
+    print(f"{output = }")
 
     learned_brdf = Blinn_Phong_BRDF(Kd, Ks, spec_c)
-    normal = torch.tensor([0, 0, 1.0]).reshape(1, 3).cuda()
+    normal = nn.functional.normalize(output["normal"])
+    
     world_normal = transform_normals_to_world_space(normal, rendering_cam)
 
     # test_normal_transformation(transform_normals_to_world_space, rendering_cam, rays_d)
@@ -333,5 +412,7 @@ if __name__ == "__main__":
     loss_fn = nn.MSELoss()
     loss = loss_fn(outgoing_radiance, rendered_color)
     print(f"{loss = }")
+
+    # TODO: Zero grad, take a step, update, etc.
 
     # All done
