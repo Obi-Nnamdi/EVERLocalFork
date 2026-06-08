@@ -86,12 +86,15 @@ class Blinn_Phong_BRDF:
             torch.sum(halfway_vecs * normal, dim=1, keepdim=True), self.spec_reflect_c
         )  # (N, 1)
 
+        print(f"{specular_term = }")
+
         # TODO: Don't want negative dot product values (light directions are spherical), but I'm choosing to not clamp for now
         # (could uncomment this line, but I assume everything passed in has a positive dot product)
         # light_intensity_dot_products = torch.clamp(light_intensity_dot_products, min = 0)
 
         # Combine diffuse color of material with the incoming light
         specular_intensity = self.Ks * incoming_light  # (N, 3)
+        print(f"{specular_intensity = }")
 
         # Final Diffuse colors for each light source
         return specular_term * specular_intensity
@@ -145,6 +148,9 @@ class Blinn_Phong_BRDF:
         # TODO: Proper intergration of diffuse and specular terms across all the lights? Should I just average?
         # Should I take weighted average w/ something else? (i.e. normal weighting)
 
+        print(f"{diffuse_component = }")
+        print(f"{specular_component = }")
+
         # Simple Diffuse + Specular combination
         full_lighting = diffuse_component + specular_component
 
@@ -181,6 +187,7 @@ class BRDF_normal_predictor(nn.Module):
         self.diffuse_brdf_size = 3
         self.spec_brdf_size = 4
         self.normal_size = 3
+        self.max_spec_c = 16
 
         # One network for the BRDFs, another for the normals.
         self.fc1 = nn.Sequential(
@@ -197,7 +204,9 @@ class BRDF_normal_predictor(nn.Module):
                 in_features=(self.img_height * self.img_width * 4)
                 + self.incoming_light_size,
                 out_features=self.normal_size,
-            )
+            ),
+            nn.Tanh()
+            # TODO: TanH Activation?
         )
         # TODO: support multiple types of BRDFs eventually?
 
@@ -228,6 +237,13 @@ class BRDF_normal_predictor(nn.Module):
         brdf_predictions = self.fc1(img_and_light_features)
         normal_predictions = self.fc2(img_and_light_features)
 
+        # "Soft Capping" Trick: https://pytorch.org/blog/flexattention/
+        # TODO: Remove softplus for this exp? We want it to be positive so I don't mind keeping it.
+        spec_c = brdf_predictions[:, -1]
+        spec_c = spec_c / self.max_spec_c
+        spec_c = nn.functional.tanh(spec_c)
+        spec_c = spec_c * self.max_spec_c
+
         # TODO: refine arguments
         # Best way to structure this...all as one tensor or as multiple?
         output_dict = {
@@ -237,8 +253,9 @@ class BRDF_normal_predictor(nn.Module):
                 "specular": brdf_predictions[
                     :,
                     self.diffuse_brdf_size : self.diffuse_brdf_size
-                    + self.spec_brdf_size,
+                    + self.spec_brdf_size - 1,
                 ],
+                "specular_c": spec_c
             },
             "normal": normal_predictions,
         }
@@ -292,6 +309,7 @@ def test_normal_transformation(view: MiniCam, rays_d: torch.Tensor):
 
 
 if __name__ == "__main__":
+    # Basic Test to ensure Neural net works:
     # Set up command line argument parser
     parser = ArgumentParser(description="Manual Renderer Parameters")
     lp = ModelParams(parser)
@@ -388,8 +406,8 @@ if __name__ == "__main__":
     output = normal_predictor(rendered_image.unsqueeze(0), incoming_light)
 
     Kd = output["brdf"]["diffuse"]
-    Ks = output["brdf"]["specular"][:, :3]
-    spec_c = output["brdf"]["specular"][:, 3]
+    Ks = output["brdf"]["specular"]
+    spec_c = output["brdf"]["specular_c"]
 
     print(f"{output = }")
 
