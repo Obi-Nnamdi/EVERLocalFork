@@ -90,6 +90,7 @@ def render_gaussians(
 
     # "None" arguments aren't used in render function.
     # TODO: Should be refactored.
+    renderer.set_camera(camera)
     return renderer.render(camera, None, None, tmin, include_depth=include_depth)
 
 
@@ -146,7 +147,12 @@ def generate_spherical_rays(
     theta from 0 -> 2pi, phi from 0 -> pi
 
     Code adapted from https://matplotlib.org/stable/gallery/mplot3d/surface3d_2.html.
+
+    Output:
+        rays_o: (N, 3)
+        rays_d: (N, 3)
     """
+
     radius = 1
     u = torch.linspace(0, 2 * torch.pi, divisions)
     v = torch.linspace(0, torch.pi, divisions)
@@ -212,50 +218,64 @@ def get_rendering_cam(model_params: ModelParams, camera_index: int) -> MiniCam:
         camera_arr = json.load(f)
         chosen_cam = camera_arr[camera_index]
 
-        # TODO: Fixed values for rotation but for some reason the camera position is still inaccurate.
-        # Investigate eventually (camera_utils.py).
-        rotation_matrix = torch.tensor(chosen_cam["rotation"])
-
-        world_to_camera = torch.zeros((4, 4))
-        # W2C Rotation
-        world_to_camera[:3, :3] = rotation_matrix
-
-        # Change coordinate frame of position properly by using rotation matrix and inverting (take negative)
-        world_to_camera[3, :3] = -(
-            torch.linalg.inv(rotation_matrix)
-            @ torch.torch.tensor(chosen_cam["position"])
-        )
-        world_to_camera[3, 3] = 1.0
-
-        fovy = focal2fov(chosen_cam["fy"], chosen_cam["height"])
-        fovx = focal2fov(chosen_cam["fx"], chosen_cam["width"])
-
-        world_view_transform = world_to_camera.to(device="cuda")
-        z_near = 0.01
-        z_far = 1000
-        proj_matrix = (
-            getProjectionMatrix(znear=z_near, zfar=z_far, fovX=fovx, fovY=fovy)
-            .transpose(0, 1)
-            .to(device="cuda")
-        )
-        full_proj_transform = (
-            world_view_transform.unsqueeze(0).bmm(proj_matrix.unsqueeze(0))
-        ).squeeze(0)
-
-        rendering_cam = MiniCam(
-            chosen_cam["width"],
-            chosen_cam["height"],
-            fovy,
-            fovx,
-            z_near,
-            z_far,
-            world_view_transform,
-            full_proj_transform,
-        )
-
-        rendering_cam.model = ProjectionType.PERSPECTIVE
+        rendering_cam = extract_cam_from_json(chosen_cam)
 
     return rendering_cam
+
+
+def extract_cam_from_json(json_cam: dict) -> MiniCam:
+    """
+    Extracts a `MiniCam` object from a single entry from a cameras.json file.
+    """
+    rotation_matrix = torch.tensor(json_cam["rotation"])
+
+    world_to_camera = torch.zeros((4, 4))
+    # W2C Rotation
+    world_to_camera[:3, :3] = rotation_matrix
+
+    # Change coordinate frame of position properly by using rotation matrix and inverting (take negative)
+    world_to_camera[3, :3] = -(
+        torch.linalg.inv(rotation_matrix) @ torch.torch.tensor(json_cam["position"])
+    )
+    world_to_camera[3, 3] = 1.0
+
+    fovy = focal2fov(json_cam["fy"], json_cam["height"])
+    fovx = focal2fov(json_cam["fx"], json_cam["width"])
+
+    world_view_transform = world_to_camera.to(device="cuda")
+    z_near = 0.01
+    z_far = 1000
+    proj_matrix = (
+        getProjectionMatrix(znear=z_near, zfar=z_far, fovX=fovx, fovY=fovy)
+        .transpose(0, 1)
+        .to(device="cuda")
+    )
+    full_proj_transform = (
+        world_view_transform.unsqueeze(0).bmm(proj_matrix.unsqueeze(0))
+    ).squeeze(0)
+
+    rendering_cam = MiniCam(
+        json_cam["width"],
+        json_cam["height"],
+        fovy,
+        fovx,
+        z_near,
+        z_far,
+        world_view_transform,
+        full_proj_transform,
+    )
+
+    rendering_cam.model = ProjectionType.PERSPECTIVE
+    return rendering_cam
+
+
+def get_cameras(model_params: ModelParams) -> list[MiniCam]:
+    # Get number of cameras:
+    camera_file = Path(model_params.model_path) / "cameras.json"
+    with open(camera_file) as f:
+        camera_arr = json.load(f)
+
+    return [extract_cam_from_json(camera) for camera in camera_arr]
 
 
 if __name__ == "__main__":
