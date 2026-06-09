@@ -189,6 +189,11 @@ class BRDF_normal_predictor(nn.Module):
         self.normal_size = 3
         self.max_spec_c = 16
 
+        # Layer Norm before output
+        self.norm1 = nn.LayerNorm(
+            self.img_height * self.img_width * 4 + self.incoming_light_size
+        )
+
         # One network for the BRDFs, another for the normals.
         self.fc1 = nn.Sequential(
             nn.Linear(
@@ -196,7 +201,10 @@ class BRDF_normal_predictor(nn.Module):
                 + self.incoming_light_size,
                 out_features=self.diffuse_brdf_size + self.spec_brdf_size,
             ),
-            nn.Softplus(beta=10),
+            # nn.Sigmoid(),
+            # nn.Softplus(beta=10),
+            # nn.LeakyReLU(0.01),
+            # nn.ReLU(),
         )
 
         self.fc2 = nn.Sequential(
@@ -216,23 +224,29 @@ class BRDF_normal_predictor(nn.Module):
         """
         Input:
             image: (N, C, H, W)
-            incoming_light: (R, C) for one point
+            incoming_light: (N, R, C) where each index of N is the incoming light for one point (R rays, C colors per ray)
             TODO: support incoming light for multiple points?
 
         """
 
+        N = image.size(0)
+
         img_features = self.conv1(image)
         img_features = self.conv2(img_features)
 
-        img_features = img_features.reshape(1, -1)  # (N, C * H * W)
+        img_features = img_features.reshape(N, -1)  # (N, C * H * W)
 
         # Concatenate incoming light to be used for MLP
         # There's only one pixel so for now this is how it's being used,
         # But should be explored how to improve this.
         # TODO: Transform incoming light in some way?
         img_and_light_features = torch.cat(
-            [img_features, incoming_light.reshape(1, -1)], dim=1
+            [img_features, incoming_light.reshape(N, -1)], dim=1
         )
+
+        # TODO: Use the norm?
+        # print(f"{img_and_light_features = }")
+        # img_and_light_features = self.norm1(img_and_light_features)
 
         brdf_predictions = self.fc1(img_and_light_features)
         normal_predictions = self.fc2(img_and_light_features)

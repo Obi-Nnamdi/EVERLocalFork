@@ -135,6 +135,68 @@ def gather_incoming_light_at_point(
     return probe_image["color"][:, :3], rays_o, rays_d
 
 
+def gather_incoming_light_at_points(
+    points: torch.Tensor,
+    renderer: FastRenderer,
+    tmin=0.01,
+    sphere_divisions=10,
+    fast=False,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Inputs:
+        points: (N, 3) of all the points to get light from
+        renderer: Renderer to query light directions from
+        tmin: Starting t value that rays cast from
+        sphere_divisions: divisions to break up light queries into
+
+    Outputs:
+        incoming_light: (N, R, 3) where each point gets R sources of incoming light
+        sphere_ray_o: (N, R, 3)
+        sphere_ray_d: (N, R, 3)
+    """
+    base_rays_d, _ = generate_spherical_rays(
+        torch.zeros(
+            3,
+        ),
+        divisions=sphere_divisions,
+    )  # (R, 3), (R, 3)
+
+    R = base_rays_d.size(0)
+    N = points.size(0)
+
+    base_rays_o = points.unsqueeze(1).expand(-1, R, -1).contiguous()  # (N, R, 3)
+    base_rays_d = base_rays_d.unsqueeze(0).expand(N, -1, -1).contiguous()  # (N, R, 3)
+
+    if not fast:
+        colors = []
+
+        # TODO: Obvious candidate for optimization. Would be nice to have a non-precomputed rendering pipeline.
+        for i in range(N):
+            rays_o = base_rays_o[i, :, :]
+            rays_d = base_rays_d[i, :, :]
+
+            probe_image = renderer.trace_rays_from_single_rayo(
+                rays_o, rays_d, tmin, 1e7
+            )
+            colors.append(probe_image["color"][:, :3])  # (R, 3)
+
+        incoming_light = torch.stack(colors, dim=0)  # (N, R, 3)
+
+    else:
+        # One Big call to trace_rays
+        # TODO: This is innaccurate due to view-dependent effects of spherical harmonics.
+        # Need to solve (would be nice to pass along a group of rayos or something to that effect, maybe run it multiple times or just get intersections and compute blending manually?).
+        rays_o = base_rays_o.reshape(N * R, 3)
+        rays_d = base_rays_d.reshape(N * R, 3)
+
+        probe_image = renderer.trace_rays_from_single_rayo(rays_o, rays_d, tmin, 1e7)
+
+        colors = probe_image["color"][:, :3]  # (N * R, 3)
+        incoming_light = colors.reshape(N, R, 3)
+
+    return incoming_light, base_rays_o, base_rays_d
+
+
 def generate_spherical_rays(
     point: torch.Tensor, divisions=10
 ) -> tuple[torch.Tensor, torch.Tensor]:

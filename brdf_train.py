@@ -14,6 +14,7 @@ from raytracing import (
     load_gaussian_model,
     render_gaussians,
     generate_spherical_rays,
+    gather_incoming_light_at_points,
 )
 from utils.general_utils import safe_state
 import sys
@@ -21,6 +22,9 @@ from tqdm import tqdm
 
 import torch
 from torch import nn
+
+from pathlib import Path
+import os
 
 if __name__ == "__main__":
     # Set up command line argument parser
@@ -62,12 +66,11 @@ if __name__ == "__main__":
     rendering_cameras = get_cameras(model_params)
     num_cameras = len(rendering_cameras)
 
-
     # Set a global image width and height that is used for instanciating the neural network, etc.
     preview_factor = 4
     global_image_height = rendering_cameras[0].image_height // preview_factor
     global_image_width = rendering_cameras[0].image_width // preview_factor
-    
+
     # Set up our initial renderer
     ever_renderer = build_gaussian_renderer(
         gaussians, rendering_cameras[0], pp.extract(args)
@@ -87,16 +90,24 @@ if __name__ == "__main__":
         global_image_height, global_image_width, incoming_light_size
     )
     brdf_normal_model = brdf_normal_model.cuda()
+    brdf_normal_model.train()
 
     # Training Config
     loss_fn = nn.MSELoss()
-    lr = 0.001
+    color_penalty = 0.5
+
+    lr = 0.0001
     grad_norm_clip = 1
     optimizer = torch.optim.AdamW(
         brdf_normal_model.parameters(),
         lr=lr,
     )
-    training_steps = 200
+    # optimizer = torch.optim.SGD(
+    #     brdf_normal_model.parameters(),
+    #     lr=lr,
+    # )
+    training_steps = 500
+    point_batch_size = 32
     # TODO: Learning rate scheduler
     # TODO: etc, etc.
 
@@ -130,38 +141,50 @@ if __name__ == "__main__":
         depth_map = rendered_image[3, :, :]  # (H, W)
 
         # TODO: Iterate over all points?
-        chosen_point = (10, 10)
+        rand_row = torch.randint(0, global_image_height, (1,)).item()
+        rand_col = torch.randint(0, global_image_width, (1,)).item()
+        # chosen_point = (10, 10)
+        chosen_point = (int(rand_row), int(rand_col))
 
         rendered_color = rgb_image[chosen_point]
         print(f"Color at {chosen_point}: {rendered_color}")
 
         # Get Incoming Light
         rays_o, rays_d = ever_renderer.get_rays(rendering_cam)
-        xyz_map = depth_map_to_xyz(rays_o, rays_d, depth_map)
+        xyz_map = depth_map_to_xyz(rays_o, rays_d, depth_map)  # (H, W, 3)
 
         # Querying Spherical Directions
-        incoming_light, _, incoming_light_dirs = gather_incoming_light_at_point(
-            xyz_map[chosen_point], ever_renderer, tmin=0.01, sphere_divisions=4
+        incoming_light_single, _, incoming_light_dirs_single = (
+            gather_incoming_light_at_point(
+                xyz_map[chosen_point],
+                ever_renderer,
+                tmin=0.01,
+                sphere_divisions=incoming_light_sphere_divisions,
+            )
         )
 
         # Ask for our BRDF values
-        model_output = brdf_normal_model(rendered_image.unsqueeze(0), incoming_light)
+        model_output = brdf_normal_model(
+            rendered_image.unsqueeze(0), incoming_light_single
+        )
 
         print(f"{model_output = }")
 
         Kd = model_output["brdf"]["diffuse"]
+        # Ks = torch.tensor([0.2, 0.2, 0.2]).cuda()
+        spec_c = torch.tensor(2.0).cuda()
         Ks = model_output["brdf"]["specular"]
-        spec_c = model_output["brdf"]["specular_c"]
+        # spec_c = model_output["brdf"]["specular_c"]
 
         learned_brdf = Blinn_Phong_BRDF(Kd, Ks, spec_c)
         pred_normal = nn.functional.normalize(model_output["normal"])
+        # pred_normal = nn.functional.normalize(torch.tensor([[0, 0, 1.0]]).cuda())
 
         world_normal = transform_normals_to_world_space(pred_normal, rendering_cam)
         print(f"{world_normal = }")
         print(f"{Kd = }")
         print(f"{Ks = }")
         print(f"{spec_c = }")
-
 
         # BRDF reconstruction - basic Diffuse BRDF with albedo
         camera_pos = rendering_cam.camera_center.cuda()  # (3,)
@@ -171,19 +194,24 @@ if __name__ == "__main__":
         )
 
         outgoing_radiance = learned_brdf.construct_outgoing_radiance(
-            incoming_light, incoming_light_dirs, outgoing_dir, world_normal
+            incoming_light_single,
+            incoming_light_dirs_single,
+            outgoing_dir,
+            world_normal,
         )
+        # outgoing_radiance = Kd
 
         print(f"{outgoing_radiance = }")
         print(f"{rendered_color - outgoing_radiance = }")
 
         # Calculate loss and update
-
-        loss = loss_fn(outgoing_radiance, rendered_color)
+        loss = loss_fn(outgoing_radiance, rendered_color) + color_penalty * (
+            torch.norm(Ks) + torch.norm(Kd)
+        )
         print(f"{loss = }")
         loss.backward()
 
-        torch.nn.utils.clip_grad_norm_(brdf_normal_model.parameters(), grad_norm_clip)
+        # torch.nn.utils.clip_grad_norm_(brdf_normal_model.parameters(), grad_norm_clip)
 
         parameters = brdf_normal_model.fc1.parameters()
         norm_type = 2
@@ -194,4 +222,12 @@ if __name__ == "__main__":
 
         optimizer.step()
 
+    # TODO: Save model, optimizer, and epoch for resuming
+    model_checkpoint_dir = "brdf_models"
+    model_save_path = (
+        Path(model_params.model_path) / model_checkpoint_dir / "brdf_model.pt"
+    )
+    os.makedirs(model_save_path.parent, exist_ok=True)
+    torch.save(brdf_normal_model.state_dict(), model_save_path)
+    print(f"Saved model at {model_save_path.absolute()}")
     # All done
