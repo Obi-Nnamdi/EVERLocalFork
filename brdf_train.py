@@ -86,9 +86,7 @@ if __name__ == "__main__":
     incoming_light_size = test_sphere_o.size(0) * 3  # N vectors that have [r, g, b]
 
     # Instanciate the BRDF_normal_predictor
-    brdf_normal_model = BRDF_normal_predictor(
-        global_image_height, global_image_width, incoming_light_size
-    )
+    brdf_normal_model = BRDF_normal_predictor(global_image_height, global_image_width)
     brdf_normal_model = brdf_normal_model.cuda()
     brdf_normal_model.train()
 
@@ -140,85 +138,94 @@ if __name__ == "__main__":
         rgb_image = rendered_image[:3, :, :].permute(1, 2, 0)  # (H, W, C)
         depth_map = rendered_image[3, :, :]  # (H, W)
 
-        # TODO: Iterate over all points?
-        rand_row = torch.randint(0, global_image_height, (1,)).item()
-        rand_col = torch.randint(0, global_image_width, (1,)).item()
-        # chosen_point = (10, 10)
-        chosen_point = (int(rand_row), int(rand_col))
-
-        rendered_color = rgb_image[chosen_point]
-        print(f"Color at {chosen_point}: {rendered_color}")
-
-        # Get Incoming Light
-        rays_o, rays_d = ever_renderer.get_rays(rendering_cam)
-        xyz_map = depth_map_to_xyz(rays_o, rays_d, depth_map)  # (H, W, 3)
-
-        # Querying Spherical Directions
-        incoming_light_single, _, incoming_light_dirs_single = (
-            gather_incoming_light_at_point(
-                xyz_map[chosen_point],
-                ever_renderer,
-                tmin=0.01,
-                sphere_divisions=incoming_light_sphere_divisions,
-            )
-        )
-
         # Ask for our BRDF values
-        model_output = brdf_normal_model(
-            rendered_image.unsqueeze(0), incoming_light_single
-        )
-
+        model_output = brdf_normal_model(rendered_image.unsqueeze(0))
         print(f"{model_output = }")
 
-        Kd = model_output["brdf"]["diffuse"]
-        # Ks = torch.tensor([0.2, 0.2, 0.2]).cuda()
-        spec_c = torch.tensor(2.0).cuda()
-        Ks = model_output["brdf"]["specular"]
-        # spec_c = model_output["brdf"]["specular_c"]
+        # Iterate through and calculate loss for multiple chosen pixels
+        loss = torch.tensor(0.0).cuda()
+        for i in range(point_batch_size):
+            # TODO: Iterate over all points?
+            rand_row = torch.randint(0, global_image_height, (1,)).item()
+            rand_col = torch.randint(0, global_image_width, (1,)).item()
+            # chosen_point = (10, 10)
+            chosen_point = (int(rand_row), int(rand_col))
 
-        learned_brdf = Blinn_Phong_BRDF(Kd, Ks, spec_c)
-        pred_normal = nn.functional.normalize(model_output["normal"])
-        # pred_normal = nn.functional.normalize(torch.tensor([[0, 0, 1.0]]).cuda())
+            Kd = model_output["brdf"]["diffuse"][:, :, chosen_point[0], chosen_point[1]]
+            # Ks = torch.tensor([0.2, 0.2, 0.2]).cuda()
+            spec_c = torch.tensor(2.0).cuda()
+            Ks = model_output["brdf"]["specular"][
+                :, :, chosen_point[0], chosen_point[1]
+            ]
+            chosen_normal = model_output["normal"][
+                :, :, chosen_point[0], chosen_point[1]
+            ]
+            # spec_c = model_output["brdf"]["specular_c"]
 
-        world_normal = transform_normals_to_world_space(pred_normal, rendering_cam)
-        print(f"{world_normal = }")
-        print(f"{Kd = }")
-        print(f"{Ks = }")
-        print(f"{spec_c = }")
+            learned_brdf = Blinn_Phong_BRDF(Kd, Ks, spec_c)
+            pred_normal = nn.functional.normalize(chosen_normal)
+            # pred_normal = nn.functional.normalize(torch.tensor([[0, 0, 1.0]]).cuda())
 
-        # BRDF reconstruction - basic Diffuse BRDF with albedo
-        camera_pos = rendering_cam.camera_center.cuda()  # (3,)
+            world_normal = transform_normals_to_world_space(pred_normal, rendering_cam)
+            print(f"{world_normal = }")
+            print(f"{Kd = }")
+            print(f"{Ks = }")
+            print(f"{spec_c = }")
 
-        outgoing_dir = nn.functional.normalize(
-            (camera_pos - xyz_map[chosen_point]).reshape(1, 3)
-        )
+            rendered_color = rgb_image[chosen_point]
+            print(f"Color at {chosen_point}: {rendered_color}")
 
-        outgoing_radiance = learned_brdf.construct_outgoing_radiance(
-            incoming_light_single,
-            incoming_light_dirs_single,
-            outgoing_dir,
-            world_normal,
-        )
-        # outgoing_radiance = Kd
+            # Get Incoming Light
+            rays_o, rays_d = ever_renderer.get_rays(rendering_cam)
+            xyz_map = depth_map_to_xyz(rays_o, rays_d, depth_map)  # (H, W, 3)
 
-        print(f"{outgoing_radiance = }")
-        print(f"{rendered_color - outgoing_radiance = }")
+            # Querying Spherical Directions
+            incoming_light_single, _, incoming_light_dirs_single = (
+                gather_incoming_light_at_point(
+                    xyz_map[chosen_point],
+                    ever_renderer,
+                    tmin=0.01,
+                    sphere_divisions=incoming_light_sphere_divisions,
+                )
+            )
 
-        # Calculate loss and update
-        loss = loss_fn(outgoing_radiance, rendered_color) + color_penalty * (
-            torch.norm(Ks) + torch.norm(Kd)
-        )
+            # BRDF reconstruction
+            camera_pos = rendering_cam.camera_center.cuda()  # (3,)
+
+            outgoing_dir = nn.functional.normalize(
+                (camera_pos - xyz_map[chosen_point]).reshape(1, 3)
+            )
+
+            outgoing_radiance = learned_brdf.construct_outgoing_radiance(
+                incoming_light_single,
+                incoming_light_dirs_single,
+                outgoing_dir,
+                world_normal,
+            )
+            # outgoing_radiance = Kd
+
+            print(f"{outgoing_radiance = }")
+            print(f"{rendered_color - outgoing_radiance = }")
+
+            # Calculate loss and update
+            loss += loss_fn(outgoing_radiance, rendered_color) + color_penalty * (
+                torch.norm(Ks) + torch.norm(Kd)
+            )
+
+        # TODO: Average? Maybe just run once with one stacked tensor w/ MSE?
         print(f"{loss = }")
         loss.backward()
 
+        # Clip grad norms
         # torch.nn.utils.clip_grad_norm_(brdf_normal_model.parameters(), grad_norm_clip)
 
-        parameters = brdf_normal_model.fc1.parameters()
-        norm_type = 2
-        total_norm = torch.norm(
-            torch.stack([torch.norm(p.grad.detach(), norm_type) for p in parameters]), norm_type)
+        # Check gradient norms
+        # parameters = brdf_normal_model.fc1.parameters()
+        # norm_type = 2
+        # total_norm = torch.norm(
+        #     torch.stack([torch.norm(p.grad.detach(), norm_type) for p in parameters]), norm_type)
 
-        print(f"{total_norm = }")
+        # print(f"{total_norm = }")
 
         optimizer.step()
 

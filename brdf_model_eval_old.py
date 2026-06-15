@@ -30,14 +30,6 @@ import time
 
 import matplotlib.pyplot as plt
 
-
-def convert_pytorch_image_to_matplotlib(image: torch.Tensor) -> torch.Tensor:
-    """
-    (N, C, H, W) -> (H, W, C)
-    """
-    return image[0].permute(1, 2, 0).cpu()
-
-
 if __name__ == "__main__":
     # Set up command line argument parser
     parser = ArgumentParser(description="Manual Renderer Parameters")
@@ -98,7 +90,9 @@ if __name__ == "__main__":
     incoming_light_size = test_sphere_o.size(0) * 3  # N vectors that have [r, g, b]
 
     # Instanciate the BRDF_normal_predictor
-    brdf_normal_model = BRDF_normal_predictor(global_image_height, global_image_width)
+    brdf_normal_model = BRDF_normal_predictor(
+        global_image_height, global_image_width, incoming_light_size
+    )
     brdf_normal_model = brdf_normal_model.cuda()
 
     # Load model from checkpoint
@@ -108,7 +102,7 @@ if __name__ == "__main__":
 
     model_state_dict = torch.load(model_checkpoint_path)
     brdf_normal_model.load_state_dict(model_state_dict)
-
+    
     print(f"Loaded model checkpoint.")
 
     # Create a figure showing predicted diffuse, specular, and normal maps:
@@ -126,17 +120,54 @@ if __name__ == "__main__":
     # Separate RGB and Depth Images
     depth_map = rendered_image[3, :, :]  # (H, W)
 
+    # TODO: Iterate over all points?
+    rand_row = torch.randint(0, global_image_height, (1,)).item()
+    rand_col = torch.randint(0, global_image_width, (1,)).item()
+
+    # Get Incoming Light for all points
+    rays_o, rays_d = ever_renderer.get_rays(rendering_cam)
+    xyz_map = depth_map_to_xyz(rays_o, rays_d, depth_map)  # (H, W, 3)
+    
+    # all_rows, all_cols = torch.meshgrid([torch.arange(global_image_height), torch.arange(global_image_width)])
+    all_rows, all_cols = torch.meshgrid([torch.arange(100, 150), torch.arange(100, 150)])
+    
+    all_rows = all_rows.ravel()
+    all_cols = all_cols.ravel()
+
+    print(f"{all_rows.shape = }")
+    print(f"{xyz_map = }")
+    print(f"{xyz_map[(all_rows, all_cols)] = }")
+
+    print("Calculating Incoming Light")
+    start_time = time.process_time()
+    # Querying Spherical Directions
+    incoming_light, _, incoming_light_dirs = (
+        gather_incoming_light_at_points(
+            xyz_map[(all_rows, all_cols)],
+            ever_renderer,
+            tmin=0.01,
+            sphere_divisions=incoming_light_sphere_divisions,
+            fast=True
+        )
+    ) # (N, R, 3) for each tensor
+    print(f"Calculated Incoming Light in {time.process_time() - start_time:.2f}s")
+
     # Evaluate model for each point
     diffuse_coeffs = []
     spec_coeffs = []
     normals = []
+
+    # How many points are we working with?
+    N = all_rows.size(0)
 
     brdf_normal_model.eval()
 
     print(f"Running Model")
     start_time = time.process_time()
     with torch.no_grad():
-        model_output = brdf_normal_model(rendered_image.unsqueeze(0))
+        # Create a block of rendered images that are just the same image duplicated for each point
+        input_images = rendered_image.unsqueeze(0).expand(N, -1, -1, -1) # (N, C, H, W)
+        model_output = brdf_normal_model(input_images, incoming_light)
 
     print(f"Ran model in {time.process_time() - start_time:.2f}s")
     print(f"{model_output = }")
@@ -157,40 +188,31 @@ if __name__ == "__main__":
     ax = plt.subplot(4, 1, 2) 
     ax.set_title("Diffuse Map")
 
-    diffuse_image = convert_pytorch_image_to_matplotlib(
-        model_output["brdf"]["diffuse"]
-    ).clip(
-        min=0, max=1
-    )  # (H, W, C)
+    diffuse_image = torch.zeros_like(rgb_image) # (H, W, C)
+    diffuse_image[all_rows, all_cols] = model_output["brdf"]["diffuse"] # both (N, 3) so it works
+    diffuse_image = diffuse_image.clip(min = 0, max = 1)
     ax.imshow(diffuse_image.cpu())
 
     # Same operation for specular
     ax = plt.subplot(4, 1, 3) 
     ax.set_title("Specular Map")
 
-    specular_image = convert_pytorch_image_to_matplotlib(
-        model_output["brdf"]["specular"]
-    ).clip(
-        min=0, max=1
-    )  # (H, W, C)
+    specular_image = torch.zeros_like(rgb_image) # (H, W, C)
+    specular_image[all_rows, all_cols] = model_output["brdf"]["specular"] # both (N, 3) so it works
+    specular_image = specular_image.clip(min = 0, max = 1)
     ax.imshow(specular_image.cpu())
 
     # Show normals as normalized r, g, b images in world space (where the range is transformed from (-1, 1) to (0, 1))
     ax = plt.subplot(4, 1, 4) 
     ax.set_title("Normal Map")
 
-    normal_image = convert_pytorch_image_to_matplotlib(
-        model_output["normal"]
-    )  # (H, W, C)
+    normal_image = torch.zeros_like(rgb_image) # (H, W, C)
 
-    camera_normals = nn.functional.normalize(model_output["normal"], dim=-1)
-    camera_normals = camera_normals.reshape(-1, 3)
+    camera_normals = nn.functional.normalize(model_output["normal"])
     world_normals = transform_normals_to_world_space(camera_normals, rendering_cam) # (N, 3)
     world_normal_colors = (world_normals / 2) + 0.5 # (-1, 1) -> (0, 1)
 
-    normal_image = world_normal_colors.reshape(
-        global_image_height, global_image_width, 3
-    )
+    normal_image[all_rows, all_cols] = world_normal_colors # both (N, 3)
     ax.imshow(normal_image.cpu())
 
     # Save figure out
