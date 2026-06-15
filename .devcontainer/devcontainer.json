@@ -1,6 +1,6 @@
 {
   "name": "EVER Devcontainer",
-  "image": "obinnamdi/ever:v1.1_full_build_vscode",
+  "image": "obinnamdi/ever:v1.2_full_build_vscode",
   "forwardPorts": [6006],
   "portsAttributes": {
     "6006": { "label": "ServerRenderer", "onAutoForward": "notify" }
