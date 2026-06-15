@@ -81,6 +81,7 @@ def render_gaussians(
     camera: MiniCam,
     tmin: Optional[float] = None,
     include_depth=True,
+    prerender_shs=True,
 ) -> torch.Tensor:
     """
     Returns a (channels x H x W) image.
@@ -91,7 +92,14 @@ def render_gaussians(
     # "None" arguments aren't used in render function.
     # TODO: Should be refactored.
     renderer.set_camera(camera)
-    return renderer.render(camera, None, None, tmin, include_depth=include_depth)
+    return renderer.render(
+        camera,
+        None,
+        None,
+        tmin,
+        include_depth=include_depth,
+        prerender_shs=prerender_shs,
+    )
 
 
 def depth_map_to_xyz(
@@ -140,7 +148,8 @@ def gather_incoming_light_at_points(
     renderer: FastRenderer,
     tmin=0.01,
     sphere_divisions=10,
-    fast=False,
+    fast=True,
+    precompute_sh=False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Inputs:
@@ -167,32 +176,51 @@ def gather_incoming_light_at_points(
     base_rays_o = points.unsqueeze(1).expand(-1, R, -1).contiguous()  # (N, R, 3)
     base_rays_d = base_rays_d.unsqueeze(0).expand(N, -1, -1).contiguous()  # (N, R, 3)
 
-    if not fast:
+    if fast:
+        # One Big call to trace_rays
+        rays_o = base_rays_o.reshape(N * R, 3)
+        rays_d = base_rays_d.reshape(N * R, 3)
+
+        # TODO: Using trace_rays_from_single_rayo is much more accurate to the slow method than this
+        # A little concerned about that fact, but continuing to use this method for now.
+        if precompute_sh:
+            probe_image = renderer.trace_rays_from_single_rayo(
+                rays_o, rays_d, tmin, 1e7
+            )
+
+        else:
+            probe_image = renderer.trace_rays_using_shs(rays_o, rays_d, tmin, 1e7)
+
+        colors = probe_image["color"][:, :3]  # (N * R, 3)
+        incoming_light = colors.reshape(N, R, 3)
+
+        # TODO: Use returned t values to filter for directions that didn't intersect an ellipsoid,
+        # and color it according to an environment map (or maybe always have an environment map in the background)
+        # t_values = probe_image["saved"].states[:, 7]  # (N * R)
+        # print(
+        #     f"{colors[t_values == 0,: ] = }"
+        # )  # (0,0,0) colors, so rays that didn't hit anything.
+        # print(f"{probe_image['saved'].states[:, 12][t_values == 0] = }")  # logT values (also 0)
+
+    else:
+        # Manually precompute spherical harmonics for each ray group
+        # TODO: Largely unnneeded now except for possible memory concerns.
         colors = []
 
-        # TODO: Obvious candidate for optimization. Would be nice to have a non-precomputed rendering pipeline.
         for i in range(N):
             rays_o = base_rays_o[i, :, :]
             rays_d = base_rays_d[i, :, :]
 
-            probe_image = renderer.trace_rays_from_single_rayo(
-                rays_o, rays_d, tmin, 1e7
-            )
+            if precompute_sh:
+                probe_image = renderer.trace_rays_from_single_rayo(
+                    rays_o, rays_d, tmin, 1e7
+                )
+            else:
+
+                probe_image = renderer.trace_rays_using_shs(rays_o, rays_d, tmin, 1e7)
             colors.append(probe_image["color"][:, :3])  # (R, 3)
 
         incoming_light = torch.stack(colors, dim=0)  # (N, R, 3)
-
-    else:
-        # One Big call to trace_rays
-        # TODO: This is innaccurate due to view-dependent effects of spherical harmonics.
-        # Need to solve (would be nice to pass along a group of rayos or something to that effect, maybe run it multiple times or just get intersections and compute blending manually?).
-        rays_o = base_rays_o.reshape(N * R, 3)
-        rays_d = base_rays_d.reshape(N * R, 3)
-
-        probe_image = renderer.trace_rays_from_single_rayo(rays_o, rays_d, tmin, 1e7)
-
-        colors = probe_image["color"][:, :3]  # (N * R, 3)
-        incoming_light = colors.reshape(N, R, 3)
 
     return incoming_light, base_rays_o, base_rays_d
 
@@ -391,6 +419,14 @@ if __name__ == "__main__":
     # Build Renderer and Render
     renderer = build_gaussian_renderer(gaussians, rendering_cam, pp.extract(args))
     rendered_image = render_gaussians(renderer, rendering_cam, None)
+    rendered_image_sh = render_gaussians(
+        renderer, rendering_cam, None, prerender_shs=False
+    )
+    print("Difference between pre-computing SHs and not:")
+    print(f"{rendered_image[:3] - rendered_image_sh[:3] =}")
+    print(
+        f"{torch.nn.functional.mse_loss(rendered_image[:3], rendered_image_sh[:3]) =}"
+    )
 
     save_rgb_image(rendered_image, Path(model_params.model_path) / "camera_1_img.png")
     print(f"Saved image.")
@@ -403,9 +439,69 @@ if __name__ == "__main__":
     # print(torch.sum(depth_map == 1e7))
 
     rays_o, rays_d = renderer.get_rays(rendering_cam)
+
     xyz_map = depth_map_to_xyz(rays_o, rays_d, depth_map)
 
     chosen_point = (145, 511)  # Should be on the very top flower
+
+    # Testing light querying from multiple chosen points
+    print(f"Testing Multiple Points of Incoming Light")
+    torch.set_printoptions(sci_mode=False)
+
+    num_points = 6
+    sphere_divisions = 4
+    rand_row = torch.randint(0, rendering_cam.image_height, (num_points,))
+    rand_col = torch.randint(0, rendering_cam.image_width, (num_points,))
+    # random_points = (torch.rand((5, 3)) * 40).cuda()
+    # random_points = xyz_map[(rand_row, rand_col)][3:8, :]
+    random_points = xyz_map[(rand_row, rand_col)]
+    incoming_light_fast, all_rays_o, all_rays_d = gather_incoming_light_at_points(
+        random_points,
+        renderer,
+        sphere_divisions=sphere_divisions,
+        fast=True,
+        precompute_sh=False,
+    )
+    torch.cuda.synchronize()
+
+    # print(f"{all_rays_o = }")
+    # print(f"{all_rays_d = }")
+    incoming_light_fast_inacc, _, _ = gather_incoming_light_at_points(
+        random_points,
+        renderer,
+        sphere_divisions=sphere_divisions,
+        fast=True,
+        precompute_sh=True,
+    )
+    incoming_light_slow, _, _ = gather_incoming_light_at_points(
+        random_points,
+        renderer,
+        sphere_divisions=sphere_divisions,
+        fast=False,
+        precompute_sh=False,
+    )
+    incoming_light_slow_inacc, _, _ = gather_incoming_light_at_points(
+        random_points,
+        renderer,
+        sphere_divisions=sphere_divisions,
+        fast=False,
+        precompute_sh=True,
+    )
+
+    print(f"{incoming_light_fast = }")
+    print(f"{incoming_light_fast_inacc = }")
+    print(f"{incoming_light_slow = }")
+    print(f"{incoming_light_slow_inacc = }")
+    print(f"{incoming_light_slow - incoming_light_fast_inacc = }")
+    print(f"{incoming_light_slow - incoming_light_fast = }")
+    print(f"{incoming_light_slow_inacc - incoming_light_fast_inacc = }")
+
+    print(
+        f"{torch.nn.functional.mse_loss(incoming_light_fast, incoming_light_slow) = }"
+    )
+    print(
+        f"{torch.nn.functional.mse_loss(incoming_light_fast_inacc, incoming_light_slow) = }"
+    )
 
     # Querying Spherical Directions
     incoming_light, rays_o, sphere_rays_d = gather_incoming_light_at_point(

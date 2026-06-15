@@ -184,16 +184,20 @@ class FastRenderer:
         "color", "saved", "tri_collection", "initial_drgb", "initial_touch_inds", "initial_touch_count"
         """
         color = self.get_color(view)  # (N, 1, 3)
-        # Note that original SH features (from self.pc.get_features) have shape (N, 16, 3) with all harmonics
 
         # prims = sp.Primitives(self.device)
         # half_attribs = torch.cat([self.mean, self.scales, self.quat], dim=1).half().contiguous()
         # prims.add_primitives(self.mean, self.scales, self.quat, half_attribs, self.density, color)
         # self.forward = sp.Forward(self.otx, self.device, prims, False)
+
         self.prims.set_features(color)
         self.forward.update_model(self.prims)
 
-        out = self.forward.trace_rays(self.gas, rayo, rayd, tmin, tmax, MAX_ITERS, 1000)
+        use_softplus = False  # Assuming that we're only going to use this with precomputed spherical harmonics, so no need to softplus again.
+
+        out = self.forward.trace_rays(
+            self.gas, rayo, rayd, tmin, tmax, MAX_ITERS, 1000, use_softplus
+        )
         return out
 
     def trace_rays_from_single_rayo(
@@ -216,21 +220,65 @@ class FastRenderer:
         self.prims.set_features(color)
         self.forward.update_model(self.prims)
 
-        out = self.forward.trace_rays(self.gas, rayo, rayd, tmin, tmax, MAX_ITERS, 1000)
+        use_softplus = False  # Assuming that we're only going to use this with precomputed spherical harmonics, so no need to softplus again.
+        out = self.forward.trace_rays(
+            self.gas, rayo, rayd, tmin, tmax, MAX_ITERS, 1000, use_softplus
+        )
         return out
 
-    def render(self,
-               view,
-               pc,
-               bg_color: torch.Tensor,
-               tmin=None,
-               scaling_modifier=1.0,
-               include_depth=False) -> torch.Tensor:
+    def trace_rays_using_shs(
+        self, rayo: torch.Tensor, rayd: torch.Tensor, tmin: float, tmax: float
+    ) -> TraceRayOutput:
+        """
+        Traces rays using actual the underlying Spherical Harmonics without precomputation.
+
+        Slower to render, but works with arbitrary ray origins and ray directions.
+
+        rayo: (N, 3)
+        rayd: (N, 3)
+
+        Returns a dictionary of fields (from py_binding.cpp):
+        "color", "saved", "tri_collection", "initial_drgb", "initial_touch_inds", "initial_touch_count"
+        """
+
+        assert not self.enable_GLO
+        # TODO: Oversimpliciation (if self.enable_GLO is true, you'd have to evaluate the GLO network as seen in self.get_color and this doesn't work)
+        shs = self.pc.get_features  # shape (N, 16, 3) with all harmonics
+
+        # Update primitive features before tracing.
+        # self.prims.set_features(shs[:, :4, :].contiguous())
+        self.prims.set_features(shs)
+        self.forward.update_model(self.prims)
+
+        use_softplus = True  # We're computing colors on the fly and each one needs to be softplussed before they're accurate
+        out = self.forward.trace_rays(
+            self.gas, rayo, rayd, tmin, tmax, MAX_ITERS, 1000, use_softplus
+        )
+        return out
+
+    def render(
+        self,
+        view,
+        pc,
+        bg_color: torch.Tensor,
+        tmin=None,
+        scaling_modifier=1.0,
+        include_depth=False,
+        prerender_shs=True,
+    ) -> torch.Tensor:
         """
         Returns a (channels x H x W) image.
         """
         rays_o, rays_d = self.get_rays(view)
-        out = self.trace_rays(rays_o, rays_d, view, self.pc.tmin if tmin is None else tmin, 1e7)
+        if prerender_shs:
+            out = self.trace_rays(
+                rays_o, rays_d, view, self.pc.tmin if tmin is None else tmin, 1e7
+            )
+        else:
+            # Actually raytrace with our features (slight numerical differences between both)
+            out = self.trace_rays_using_shs(
+                rays_o, rays_d, self.pc.tmin if tmin is None else tmin, 1e7
+            )
         iters = out['saved'].iters
 
         if include_depth:
