@@ -29,11 +29,21 @@ class Blinn_Phong_BRDF:
     ) -> None:
         """
         Initialize a Blinn Phong BRDF with Diffuse, Specular, and specular reflection size values.
+        Inputs:
+            Kd: (P, 3)
+            Ks: (P, 3)
+            spec_reflect_c: (P,)
         """
-        self.Kd = Kd
-        self.Ks = Ks
+
+        P = Kd.size(0)
+        assert Kd.size(1) == 3
+        assert Ks.size(1) == 3
+        assert spec_reflect_c.size(0) == P
+
+        self.Kd = Kd  # (P, 3)
+        self.Ks = Ks  # (P, 3)
         # Control spectular reflection size
-        self.spec_reflect_c = spec_reflect_c
+        self.spec_reflect_c = spec_reflect_c  # (P,)
 
     def compute_diffuse(
         self,
@@ -42,25 +52,34 @@ class Blinn_Phong_BRDF:
         normal: torch.Tensor,
     ) -> torch.Tensor:
         """
-        incoming_light: (N, 3) R,G,B values of incoming light for each direction
-        incoming_light_dirs: (N, 3) Directions oriented towards the light source in world space
-        normal: (1, 3) Surface normal in world space
+        Inputs:
+            incoming_light: (N, 3) R,G,B values of incoming light for each direction
+            incoming_light_dirs: (N, 3) Directions oriented towards the light source in world space
+            normal: (P, 3) Surface normals in world space for each of P points
+        Outputs:
+            diffuse_color: (N, P, 3) R,G,B values of diffuse lighting contributions at each of P points for all of the N directions
         """
 
         # Compute dot products of normal and all light directions
-        diffuse_term = torch.sum(
-            incoming_light_dirs * normal, dim=1, keepdim=True
-        )  # (N, 1)
+        diffuse_terms = incoming_light_dirs @ normal.T  # (N, 3) @ (3, P) --> (N, P)
+        diffuse_terms = diffuse_terms.unsqueeze(-1)  # (N, P, 1)
 
         # TODO: Don't want negative dot product values (light directions are spherical), but I'm choosing to not clamp for now
         # (could uncomment this line, but I assume everything passed in has a positive dot product)
         # light_intensity_dot_products = torch.clamp(light_intensity_dot_products, min = 0)
 
         # Combine diffuse color of material with the incoming light
-        diffuse_intensity = self.Kd * incoming_light  # (N, 3)
+        N = incoming_light.size(0)
+        P = normal.size(0)
+        expanded_kd = self.Kd.unsqueeze(0).expand(N, -1, -1)  # (N (new), P, 3)
+        expanded_incoming_light = incoming_light.unsqueeze(1).expand(
+            -1, P, -1
+        )  # (N, P (new), 3)
+
+        diffuse_intensity = expanded_kd * expanded_incoming_light  # (N, P, 3)
 
         # Final Diffuse colors for each light source
-        return diffuse_term * diffuse_intensity
+        return diffuse_terms * diffuse_intensity  # (N, P, 3)
 
     def compute_specular(
         self,
@@ -74,31 +93,45 @@ class Blinn_Phong_BRDF:
 
         incoming_light: (N, 3) R,G,B values of incoming light for each direction
         incoming_light_dirs: (N, 3) Directions oriented towards the light source in world space
-        normal: (1, 3) Surface normal in world space
+        normal: (P, 3) Surface normal in world space
         outgoing_dir: (1, 3) Outgoing (view) direction of radiance, in world space (head at the camera, tip at the surface point)
+
+        Outputs:
+            specular_color: (N, P, 3) R,G,B values of specular lighting contributions at each of P points for all of the N directions
         """
+
+        N = incoming_light.size(0)
+        P = normal.size(0)
 
         # Compute specular term
         halfway_vecs = torch.nn.functional.normalize(
             (incoming_light_dirs + outgoing_dir)
         )  # (N, 3)
 
+        # Compute dot products of normal and all halfway directions
+        specular_term_intermediate = (
+            halfway_vecs @ normal.T
+        )  # (N, 3) @ (3, P) --> (N, P)
         specular_term = torch.pow(
-            torch.sum(halfway_vecs * normal, dim=1, keepdim=True), self.spec_reflect_c
-        )  # (N, 1)
-
-        print(f"{specular_term = }")
+            specular_term_intermediate,
+            self.spec_reflect_c.unsqueeze(0).expand(N, -1),
+        )  # (N, P), [specular exp reshaped to (N, P)]
+        specular_term = specular_term.unsqueeze(-1)  # (N, P, 1)
 
         # TODO: Don't want negative dot product values (light directions are spherical), but I'm choosing to not clamp for now
         # (could uncomment this line, but I assume everything passed in has a positive dot product)
         # light_intensity_dot_products = torch.clamp(light_intensity_dot_products, min = 0)
 
         # Combine diffuse color of material with the incoming light
-        specular_intensity = self.Ks * incoming_light  # (N, 3)
-        print(f"{specular_intensity = }")
 
-        # Final Diffuse colors for each light source
-        return specular_term * specular_intensity
+        specular_intensity = self.Ks.unsqueeze(0).expand(
+            N, -1, -1
+        ) * incoming_light.unsqueeze(1).expand(
+            -1, P, -1
+        )  # (N (new), P, 3) * (N, P (new), 3)
+
+        # Final colors for each light source
+        return specular_term * specular_intensity  # (N, P, 1) * (N, P, 3) => (N, P, 3)
 
     # TODO: Construct as a general function
     def construct_outgoing_radiance(
@@ -106,10 +139,20 @@ class Blinn_Phong_BRDF:
         incoming_light: torch.Tensor,
         incoming_light_dirs: torch.Tensor,
         outgoing_dir: torch.Tensor,
-        normal_dir: torch.Tensor,
+        normals: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Returns color as a (3,) tensor.
+        Inputs:
+            incoming_light: (N, 3) R,G,B values of incoming light for each direction
+            incoming_light_dirs: (N, 3) Directions oriented towards the light source in world space
+            normal: (P, 3) Surface normals in world space for each of P points
+            outgoing_dir: (1, 3) Outgoing (view) direction of radiance, in world space (head at the camera, tip at the surface point)
+
+        Outputs:
+
+
+
+        Returns color as a (P, 3) tensor for every point.
 
         Sources:
 
@@ -117,50 +160,43 @@ class Blinn_Phong_BRDF:
         https://15462.courses.cs.cmu.edu/spring2024content/lectures/15_brdfs/15_brdfs_slides.pdf
         https://www.scratchapixel.com/lessons/3d-basic-rendering/phong-shader-BRDF/phong-illumination-models-brdf.html
         """
-        # Compute light attenuation based on viewing direction as found in rendering equation
-        # <w_i, n>
-        light_weakening_factors = torch.sum(incoming_light_dirs * normal_dir, dim=1)
-
-        # Only choose light sources that are on the same side as the surface normal:
-        # I guess averaging should be done across all positive surface-normal * light direction dot products?
-        positive_light_contributions = light_weakening_factors >= 0
-
-        relevant_incoming_light = incoming_light[positive_light_contributions, :]
-        relevant_incoming_light_dirs = incoming_light_dirs[
-            positive_light_contributions, :
-        ]
-
-        # TODO: is this needed?
-        relevant_light_weakening_factors = light_weakening_factors[
-            positive_light_contributions
-        ]
-
-        # print(f"{relevant_incoming_light = }")
-        # print(f"{relevant_incoming_light_dirs = }")
 
         diffuse_component = self.compute_diffuse(
-            relevant_incoming_light, relevant_incoming_light_dirs, normal_dir
+            incoming_light, incoming_light_dirs, normals
         )
         specular_component = self.compute_specular(
-            relevant_incoming_light,
-            relevant_incoming_light_dirs,
-            normal_dir,
+            incoming_light,
+            incoming_light_dirs,
+            normals,
             outgoing_dir,
         )
 
         # TODO: Proper intergration of diffuse and specular terms across all the lights? Should I just average?
         # Should I take weighted average w/ something else? (i.e. normal weighting)
 
-        print(f"{diffuse_component = }")
-        print(f"{specular_component = }")
-
         # Simple Diffuse + Specular combination
-        full_lighting = diffuse_component + specular_component
+        full_lighting = diffuse_component + specular_component  # (N, P, 3)
 
-        # Average result to get our output
+        # Compute light attenuation based on viewing direction as found in rendering equation
+        # <w_i, n>
+        light_weakening_factors = (
+            incoming_light_dirs @ normals.T
+        )  # (N, 3) @ (3, P) --> (N, P)
+        light_weakening_factors = light_weakening_factors.unsqueeze(-1)  # (N, P, 1)
+
+        # Only choose light sources that are on the same side as the surface normal.
+        positive_light_contributions = light_weakening_factors >= 0  # (N, P, 1)
+
+        # We now only keep the positive lighting contributions (same side hemisphere) out of all the lighting contributions
+        positive_masked_lighting = full_lighting.masked_fill(
+            ~positive_light_contributions, 0.0
+        )  # (N, P, 3)
+
+        # Manually take the mean across masked elements
+        return torch.sum(positive_masked_lighting, dim=0) / torch.sum(
+            positive_light_contributions, dim=0
+        )  # (P, 3)
         # TODO: Might be worth looking into the dw_i term in the rendering equation and maybe thinking of just multipling a sort of area patch term?
-        # Really not sure
-        return torch.mean(full_lighting, dim=0)
 
 
 class BRDF_normal_predictor(nn.Module):
@@ -404,14 +440,27 @@ if __name__ == "__main__":
         rendering_cam.image_height, rendering_cam.image_width
     )
     normal_predictor = normal_predictor.cuda()
-    output = normal_predictor(rendered_image.unsqueeze(0))
+    output = normal_predictor(
+        rendered_image.unsqueeze(0)
+    )  # Kd, Ks, Normal are (N, 3, H, W)
 
-    Kd = output["brdf"]["diffuse"][:, :, chosen_point[0], chosen_point[1]]
-    Ks = output["brdf"]["specular"][:, :, chosen_point[0], chosen_point[1]]
-    spec_c = output["brdf"]["specular_c"][:, :, chosen_point[0], chosen_point[1]]
-    normal = output["normal"][:, :, chosen_point[0], chosen_point[1]]
+    chosen_point = ((0, 0), (0, 0))  # P = 2
 
-    print(f"{output = }")
+    Kd = output["brdf"]["diffuse"][0, :, chosen_point[0], chosen_point[1]].T  # (P, 3)
+    Ks = output["brdf"]["specular"][0, :, chosen_point[0], chosen_point[1]].T  # (P, 3)
+    spec_c = output["brdf"]["specular_c"][
+        0, :, chosen_point[0], chosen_point[1]
+    ].T.squeeze(
+        1
+    )  # (P,)
+    normal = output["normal"][0, :, chosen_point[0], chosen_point[1]].T  # (P, 3)
+
+    # print(f"{output = }")
+    print(f"{Kd = }")
+    print(f"{Kd.shape  = }")
+    print(f"{Ks.shape  = }")
+    print(f"{spec_c.shape  = }")
+    print(f"{normal.shape  = }")
 
     learned_brdf = Blinn_Phong_BRDF(Kd, Ks, spec_c)
     normal = nn.functional.normalize(normal)
@@ -425,14 +474,14 @@ if __name__ == "__main__":
     )
 
     print(f"{outgoing_radiance = }")
+    print(f"{outgoing_radiance.shape = }")
 
     print(f"{outgoing_radiance - rendered_color = }")
 
-    # TODO: Calculate loss and such...
+    # Test loss calculation...
     loss_fn = nn.MSELoss()
     loss = loss_fn(outgoing_radiance, rendered_color)
     print(f"{loss = }")
 
-    # TODO: Zero grad, take a step, update, etc.
 
     # All done
