@@ -74,9 +74,11 @@ class EvalBlinnPhongBRDF(Function):
             output=output,
         )
 
-        # Max thread count is around 1024 on my GPU, higher values raise an error
-        block_size_x = 32
-        block_size_y = 32
+        # Max thread count is 1024 (32^2), higher values raise an error.
+        # TODO: Worth exploring block size x-y tradeoffs? I.e. 64/16 vs 32/32.
+        # https://forums.developer.nvidia.com/t/what-is-the-maximum-number-of-blocks-i-can-use/201587
+        block_size_x = 64
+        block_size_y = 16
         brdf_eval_kernel.launchRaw(
             blockSize=(block_size_x, block_size_y, 1),
             gridSize=(
@@ -137,8 +139,8 @@ class EvalBlinnPhongBRDF(Function):
             output=(output, grad_output),
         )
 
-        block_size_x = 32
-        block_size_y = 32
+        block_size_x = 64
+        block_size_y = 16
         brdf_eval_kernel_bwd.launchRaw(
             blockSize=(block_size_x, block_size_y, 1),
             gridSize=(
@@ -165,6 +167,57 @@ class EvalBlinnPhongBRDF(Function):
     @staticmethod
     def calc_block_size(dim_size: int, block_size: int) -> int:
         return (dim_size + (block_size - 1)) // block_size
+
+
+def eval_blinn_phong_outgoing_radiance(
+    incoming_light: torch.Tensor,
+    incoming_light_dirs: torch.Tensor,
+    outgoing_dir: torch.Tensor,
+    normals: torch.Tensor,
+    diffuse_K: torch.Tensor,
+    specular_K: torch.Tensor,
+    spec_reflect_c: torch.Tensor,
+):
+    """
+    Evaluate the given Blinn-Phong BRDFs (specified with diffuse, specular, and specular_c coeffs) with the given incoming light,
+    matching each point to its corresponding incoming light.
+
+    Uses :class:`EvalBlinPhongBRDF` in the backend.
+
+    Inputs:
+        incoming_light: (P, N, 3) RGB values of incoming light for each direction
+        incoming_light_dirs: (P, N, 3) Directions oriented towards the light source in world space
+        normal: (P, 3) Surface normals in world space for each of P points
+        outgoing_dir: (1, 3) Outgoing (view) direction of radiance, in world space (head at the camera, tip at the surface point)
+        diffuse_K: (P, 3) RGB values of diffuse coeffients (0 - 1).
+        specular_K: (P, 3) RGB values of specular coeffients (0 - 1).
+        spec_reflect_c: (P,) Surface "shininess" specified as the specular exponent.
+
+    Outputs:
+        color: (P, 3) R,G,B values of outgoing radiance at each of P points as observed by outgoing_dir
+    """
+
+    # (P, N, 3) R,G,B values of lighting contributions at each of P points for all of the N directions
+    outgoing_radiance: torch.Tensor = EvalBlinnPhongBRDF.apply(
+        incoming_light,
+        incoming_light_dirs,
+        outgoing_dir,
+        normals,
+        diffuse_K,
+        specular_K,
+        spec_reflect_c,
+    )  # pyright: ignore[reportAssignmentType]
+
+    # Get Directions of light that didn't contribute (not on same side as normal)
+    outgoing_radiance_inf_mask = outgoing_radiance.isposinf()
+    positive_masked_radiance = outgoing_radiance.masked_fill(
+        outgoing_radiance_inf_mask, 0.0
+    )  # (P, N, 3)
+
+    # Take masked mean across positive (not inf) normal lighting directions (collapsing "N" dimension)
+    return torch.sum(positive_masked_radiance, dim=1) / torch.sum(
+        ~outgoing_radiance_inf_mask, dim=1
+    )
 
 
 # TODO: Could be turned into a more general BRDF class when implementing more complex models
@@ -340,11 +393,6 @@ class Blinn_Phong_BRDF:
         positive_masked_lighting = full_lighting.masked_fill(
             ~positive_light_contributions, 0.0
         )  # (N, P, 3)
-
-        return positive_masked_lighting.permute(
-            1, 0, 2
-        )  # (P, N, 3) to match Slangtorch kernel
-        print(f"{positive_masked_lighting = }")
 
         # Manually take the mean across masked elements
         return torch.sum(positive_masked_lighting, dim=0) / torch.sum(
@@ -647,7 +695,7 @@ if __name__ == "__main__":
 
     torch.cuda.synchronize()
     start_time = time.process_time()
-    outgoing_radiance_slang = EvalBlinnPhongBRDF.apply(
+    outgoing_radiance_slang = eval_blinn_phong_outgoing_radiance(
         incoming_light,
         incoming_light_dirs,
         outgoing_dir,
@@ -658,11 +706,6 @@ if __name__ == "__main__":
     )
     torch.cuda.synchronize()
     print(f"Radiance (Slang) completed in {time.process_time() - start_time:.6f}s")
-
-    outgoing_radiance_inf_mask = torch.isposinf(outgoing_radiance_slang)
-    outgoing_radiance_slang = outgoing_radiance_slang.masked_fill(
-        outgoing_radiance_inf_mask, 0.0
-    )
 
     # Test forward pass computation between slang and pytorch versions
     print(f"{outgoing_radiance_pytorch = }")
@@ -692,11 +735,11 @@ if __name__ == "__main__":
     print(f"Pytorch Grad: {Ks.grad.cpu() = }")  # Gives a NaN result....
     print(f"Pytorch Grad: {normal.grad.cpu() = }")
 
-    # print(f"{outgoing_radiance - rendered_color = }")
+    # Test loss calculation...
+    print(f"{outgoing_radiance_slang - rendered_color = }")
 
-    # # Test loss calculation...
-    # loss_fn = nn.MSELoss()
-    # loss = loss_fn(outgoing_radiance, rendered_color)
-    # print(f"{loss = }")
+    loss_fn = nn.MSELoss()
+    loss = loss_fn(outgoing_radiance_slang, rendered_color)
+    print(f"{loss = }")
 
     # All done
