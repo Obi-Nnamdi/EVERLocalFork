@@ -10,12 +10,161 @@ from raytracing import (
 )
 from utils.general_utils import safe_state
 import sys
+from typing import Any
 
 from scene.cameras import MiniCam
 from gaussian_renderer.ever import get_ray_directions
 import torch
 from torch import nn
+from torch.autograd import Function
 import math
+import time
+
+# Import and build our custom slangtorch kernel for evaluating BRDFs.
+from pathlib import Path
+import slangtorch
+
+kernels = slangtorch.loadModule(
+    str(Path(__file__).parent / "ever/splinetracers/slang/brdf_eval.slang")
+)
+
+
+class EvalBlinnPhongBRDF(Function):
+    """
+    Evaluate the given Blinn-Phong BRDFs with the given incoming light, matching each point to its corresponding incoming light.
+    """
+
+    @staticmethod
+    def forward(
+        ctx: Any,
+        incoming_light: torch.Tensor,
+        incoming_light_dirs: torch.Tensor,
+        outgoing_dir: torch.Tensor,
+        normals: torch.Tensor,
+        diffuse_K: torch.Tensor,
+        specular_K: torch.Tensor,
+        spec_reflect_c: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Inputs:
+            incoming_light: (P, N, 3) R,G,B values of incoming light for each direction
+            incoming_light_dirs: (P, N, 3) Directions oriented towards the light source in world space
+            normal: (P, 3) Surface normals in world space for each of P points
+            outgoing_dir: (1, 3) Outgoing (view) direction of radiance, in world space (head at the camera, tip at the surface point)
+            diffuse_K: (P, 3)
+            specular_K: (P, 3)
+            spec_reflect_c: (P,)
+
+        Outputs:
+            color: (P, N, 3) R,G,B values of lighting contributions at each of P points for all of the N directions
+        """
+        # TODO: Remove the outer "P" dimension from incoming_light_dirs since light directions are always the same for each point
+        # (Might not be worth it since we already get that large tensor from trace_rays, but could save memory potentially)
+        # TODO: Fill with an arbitrary value that can be masked later (nan? inf?).
+        output = torch.full_like(incoming_light, float("inf"))
+
+        brdf_eval_kernel = kernels.eval_outgoing_radiance_blinn_phong(
+            incoming_light=incoming_light,
+            incoming_light_dirs=incoming_light_dirs,
+            outgoing_dir=outgoing_dir,
+            normals=normals,
+            diffuse_K=diffuse_K,
+            specular_K=specular_K,
+            spec_reflect_c=spec_reflect_c,
+            output=output,
+        )
+
+        # Max thread count is around 1024 on my GPU, higher values raise an error
+        block_size_x = 32
+        block_size_y = 32
+        brdf_eval_kernel.launchRaw(
+            blockSize=(block_size_x, block_size_y, 1),
+            gridSize=(
+                EvalBlinnPhongBRDF.calc_block_size(
+                    incoming_light.shape[0], block_size_x
+                ),
+                EvalBlinnPhongBRDF.calc_block_size(
+                    incoming_light.shape[1], block_size_y
+                ),
+                1,
+            ),
+        )
+
+        # Save all inputs for our backward pass
+        ctx.save_for_backward(
+            incoming_light,
+            incoming_light_dirs,
+            outgoing_dir,
+            normals,
+            diffuse_K,
+            specular_K,
+            spec_reflect_c,
+            output,
+        )
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        # TODO: Might need to clone grad_output?
+        # Note: When using DiffTensorView, grad_output gets 'consumed' during the reverse-mode.
+        # If grad_output may be reused, consider calling grad_output = grad_output.clone()
+        (
+            incoming_light,
+            incoming_light_dirs,
+            outgoing_dir,
+            normals,
+            diffuse_K,
+            specular_K,
+            spec_reflect_c,
+            output,
+        ) = ctx.saved_tensors
+
+        # Create gradients for all tensors that have them (BRDF and normal parameters)
+        normals_grad = torch.zeros_like(normals)
+        diffuse_K_grad = torch.zeros_like(diffuse_K)
+        specular_K_grad = torch.zeros_like(specular_K)
+        spec_reflect_c_grad = torch.zeros_like(spec_reflect_c)
+
+        # Create backwards kernel and run it
+        brdf_eval_kernel_bwd = kernels.eval_outgoing_radiance_blinn_phong.bwd(
+            incoming_light=incoming_light,
+            incoming_light_dirs=incoming_light_dirs,
+            outgoing_dir=outgoing_dir,
+            normals=(normals, normals_grad),
+            diffuse_K=(diffuse_K, diffuse_K_grad),
+            specular_K=(specular_K, specular_K_grad),
+            spec_reflect_c=(spec_reflect_c, spec_reflect_c_grad),
+            output=(output, grad_output),
+        )
+
+        block_size_x = 32
+        block_size_y = 32
+        brdf_eval_kernel_bwd.launchRaw(
+            blockSize=(block_size_x, block_size_y, 1),
+            gridSize=(
+                EvalBlinnPhongBRDF.calc_block_size(
+                    incoming_light.shape[0], block_size_x
+                ),
+                EvalBlinnPhongBRDF.calc_block_size(
+                    incoming_light.shape[1], block_size_y
+                ),
+                1,
+            ),
+        )
+
+        return (
+            None,
+            None,
+            None,
+            normals_grad,
+            diffuse_K_grad,
+            specular_K_grad,
+            spec_reflect_c_grad,
+        )
+
+    @staticmethod
+    def calc_block_size(dim_size: int, block_size: int) -> int:
+        return (dim_size + (block_size - 1)) // block_size
 
 
 # TODO: Could be turned into a more general BRDF class when implementing more complex models
@@ -143,8 +292,8 @@ class Blinn_Phong_BRDF:
     ) -> torch.Tensor:
         """
         Inputs:
-            incoming_light: (N, 3) R,G,B values of incoming light for each direction
-            incoming_light_dirs: (N, 3) Directions oriented towards the light source in world space
+            incoming_light: (P, N, 3) R,G,B values of incoming light for each direction
+            incoming_light_dirs: (P, N, 3) Directions oriented towards the light source in world space
             normal: (P, 3) Surface normals in world space for each of P points
             outgoing_dir: (1, 3) Outgoing (view) direction of radiance, in world space (head at the camera, tip at the surface point)
 
@@ -191,6 +340,11 @@ class Blinn_Phong_BRDF:
         positive_masked_lighting = full_lighting.masked_fill(
             ~positive_light_contributions, 0.0
         )  # (N, P, 3)
+
+        return positive_masked_lighting.permute(
+            1, 0, 2
+        )  # (P, N, 3) to match Slangtorch kernel
+        print(f"{positive_masked_lighting = }")
 
         # Manually take the mean across masked elements
         return torch.sum(positive_masked_lighting, dim=0) / torch.sum(
@@ -446,14 +600,20 @@ if __name__ == "__main__":
 
     chosen_point = ((0, 0), (0, 0))  # P = 2
 
-    Kd = output["brdf"]["diffuse"][0, :, chosen_point[0], chosen_point[1]].T  # (P, 3)
-    Ks = output["brdf"]["specular"][0, :, chosen_point[0], chosen_point[1]].T  # (P, 3)
+    Kd = output["brdf"]["diffuse"][
+        0, :, chosen_point[0], chosen_point[1]
+    ].T.clone()  # (P, 3) [clone to allow retaining of gradients]
+    Ks = output["brdf"]["specular"][
+        0, :, chosen_point[0], chosen_point[1]
+    ].T.clone()  # (P, 3)
     spec_c = output["brdf"]["specular_c"][
         0, :, chosen_point[0], chosen_point[1]
     ].T.squeeze(
         1
     )  # (P,)
-    normal = output["normal"][0, :, chosen_point[0], chosen_point[1]].T  # (P, 3)
+    normal = output["normal"][
+        0, :, chosen_point[0], chosen_point[1]
+    ].T.clone()  # (P, 3)
 
     # print(f"{output = }")
     print(f"{Kd = }")
@@ -469,19 +629,74 @@ if __name__ == "__main__":
 
     # test_normal_transformation(transform_normals_to_world_space, rendering_cam, rays_d)
 
-    outgoing_radiance = learned_brdf.construct_outgoing_radiance(
+    torch.cuda.synchronize()
+    start_time = time.process_time()
+    outgoing_radiance_pytorch = learned_brdf.construct_outgoing_radiance(
         incoming_light, incoming_light_dirs, outgoing_dir, world_normal
     )
 
-    print(f"{outgoing_radiance = }")
-    print(f"{outgoing_radiance.shape = }")
+    torch.cuda.synchronize()
+    print(f"Radiance (Pytorch) completed in {time.process_time() - start_time:.6f}s")
 
-    print(f"{outgoing_radiance - rendered_color = }")
+    P = Kd.size(0)
+    N = incoming_light.size(0)
 
-    # Test loss calculation...
-    loss_fn = nn.MSELoss()
-    loss = loss_fn(outgoing_radiance, rendered_color)
-    print(f"{loss = }")
+    # Same incoming light for every single point, similar to what we have now.
+    incoming_light = incoming_light.unsqueeze(0).expand(P, N, 3).contiguous()
+    incoming_light_dirs = incoming_light_dirs.unsqueeze(0).expand(P, N, 3).contiguous()
 
+    torch.cuda.synchronize()
+    start_time = time.process_time()
+    outgoing_radiance_slang = EvalBlinnPhongBRDF.apply(
+        incoming_light,
+        incoming_light_dirs,
+        outgoing_dir,
+        world_normal,
+        Kd,
+        Ks,
+        spec_c,
+    )
+    torch.cuda.synchronize()
+    print(f"Radiance (Slang) completed in {time.process_time() - start_time:.6f}s")
+
+    outgoing_radiance_inf_mask = torch.isposinf(outgoing_radiance_slang)
+    outgoing_radiance_slang = outgoing_radiance_slang.masked_fill(
+        outgoing_radiance_inf_mask, 0.0
+    )
+
+    # Test forward pass computation between slang and pytorch versions
+    print(f"{outgoing_radiance_pytorch = }")
+    print(f"{outgoing_radiance_slang = }")
+    print(f"{outgoing_radiance_slang.shape = }")
+    print(f"{outgoing_radiance_pytorch - outgoing_radiance_slang = }")
+
+    Kd.retain_grad()
+    Ks.retain_grad()
+    normal.retain_grad()
+    # Test gradient computation (slang)
+    avg_radiance = torch.mean(outgoing_radiance_slang)
+    avg_radiance.backward(retain_graph=True)
+    print(f"Slang Grad: {Kd.grad.cpu() = }")
+    print(f"Slang Grad: {Ks.grad.cpu() = }")
+    print(f"Slang Grad: {normal.grad.cpu() = }")
+
+    # Clear gradients
+    Kd.grad = None
+    Ks.grad = None
+    normal.grad = None
+
+    # Test gradient computation (pytorch)
+    avg_radiance = torch.mean(outgoing_radiance_pytorch)
+    avg_radiance.backward()
+    print(f"Pytorch Grad: {Kd.grad.cpu() = }")
+    print(f"Pytorch Grad: {Ks.grad.cpu() = }")  # Gives a NaN result....
+    print(f"Pytorch Grad: {normal.grad.cpu() = }")
+
+    # print(f"{outgoing_radiance - rendered_color = }")
+
+    # # Test loss calculation...
+    # loss_fn = nn.MSELoss()
+    # loss = loss_fn(outgoing_radiance, rendered_color)
+    # print(f"{loss = }")
 
     # All done
