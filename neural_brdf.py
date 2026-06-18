@@ -39,7 +39,7 @@ class EvalBlinnPhongBRDF(Function):
         ctx: Any,
         incoming_light: torch.Tensor,
         incoming_light_dirs: torch.Tensor,
-        outgoing_dir: torch.Tensor,
+        outgoing_directions: torch.Tensor,
         normals: torch.Tensor,
         diffuse_K: torch.Tensor,
         specular_K: torch.Tensor,
@@ -50,7 +50,7 @@ class EvalBlinnPhongBRDF(Function):
             incoming_light: (P, N, 3) R,G,B values of incoming light for each direction
             incoming_light_dirs: (P, N, 3) Directions oriented towards the light source in world space
             normal: (P, 3) Surface normals in world space for each of P points
-            outgoing_dir: (1, 3) Outgoing (view) direction of radiance, in world space (head at the camera, tip at the surface point)
+            outgoing_directions: (P, 3) Outgoing (view) direction of radiance, in world space (head at the camera, tip at the surface point) for each point.
             diffuse_K: (P, 3)
             specular_K: (P, 3)
             spec_reflect_c: (P,)
@@ -58,6 +58,7 @@ class EvalBlinnPhongBRDF(Function):
         Outputs:
             color: (P, N, 3) R,G,B values of lighting contributions at each of P points for all of the N directions
         """
+
         # TODO: Remove the outer "P" dimension from incoming_light_dirs since light directions are always the same for each point
         # (Might not be worth it since we already get that large tensor from trace_rays, but could save memory potentially)
         # TODO: Fill with an arbitrary value that can be masked later (nan? inf?).
@@ -66,7 +67,7 @@ class EvalBlinnPhongBRDF(Function):
         brdf_eval_kernel = kernels.eval_outgoing_radiance_blinn_phong(
             incoming_light=incoming_light,
             incoming_light_dirs=incoming_light_dirs,
-            outgoing_dir=outgoing_dir,
+            outgoing_directions=outgoing_directions,
             normals=normals,
             diffuse_K=diffuse_K,
             specular_K=specular_K,
@@ -96,7 +97,7 @@ class EvalBlinnPhongBRDF(Function):
         ctx.save_for_backward(
             incoming_light,
             incoming_light_dirs,
-            outgoing_dir,
+            outgoing_directions,
             normals,
             diffuse_K,
             specular_K,
@@ -113,7 +114,7 @@ class EvalBlinnPhongBRDF(Function):
         (
             incoming_light,
             incoming_light_dirs,
-            outgoing_dir,
+            outgoing_directions,
             normals,
             diffuse_K,
             specular_K,
@@ -131,7 +132,7 @@ class EvalBlinnPhongBRDF(Function):
         brdf_eval_kernel_bwd = kernels.eval_outgoing_radiance_blinn_phong.bwd(
             incoming_light=incoming_light,
             incoming_light_dirs=incoming_light_dirs,
-            outgoing_dir=outgoing_dir,
+            outgoing_directions=outgoing_directions,
             normals=(normals, normals_grad),
             diffuse_K=(diffuse_K, diffuse_K_grad),
             specular_K=(specular_K, specular_K_grad),
@@ -172,7 +173,7 @@ class EvalBlinnPhongBRDF(Function):
 def eval_blinn_phong_outgoing_radiance(
     incoming_light: torch.Tensor,
     incoming_light_dirs: torch.Tensor,
-    outgoing_dir: torch.Tensor,
+    outgoing_directions: torch.Tensor,
     normals: torch.Tensor,
     diffuse_K: torch.Tensor,
     specular_K: torch.Tensor,
@@ -186,22 +187,22 @@ def eval_blinn_phong_outgoing_radiance(
 
     Inputs:
         incoming_light: (P, N, 3) RGB values of incoming light for each direction
-        incoming_light_dirs: (P, N, 3) Directions oriented towards the light source in world space
+        incoming_light_dirs: (P, N, 3) Normalized directions oriented towards the light source in world space
         normal: (P, 3) Surface normals in world space for each of P points
-        outgoing_dir: (1, 3) Outgoing (view) direction of radiance, in world space (head at the camera, tip at the surface point)
-        diffuse_K: (P, 3) RGB values of diffuse coeffients (0 - 1).
+        outgoing_directions: (P, 3) Outgoing (view) normalized direction of radiance, in world space (head at the camera, tip at the surface point) for each point.
+        diffuse_K: (P, 3) RGB values of diffuse coeffients (0 - 1 scale, but values can be greater or lower).
         specular_K: (P, 3) RGB values of specular coeffients (0 - 1).
         spec_reflect_c: (P,) Surface "shininess" specified as the specular exponent.
 
     Outputs:
-        color: (P, 3) R,G,B values of outgoing radiance at each of P points as observed by outgoing_dir
+        color: (P, 3) R,G,B values of outgoing radiance at each of P points as observed by the associated outgoing direction.
     """
 
     # (P, N, 3) R,G,B values of lighting contributions at each of P points for all of the N directions
     outgoing_radiance: torch.Tensor = EvalBlinnPhongBRDF.apply(
         incoming_light,
         incoming_light_dirs,
-        outgoing_dir,
+        outgoing_directions,
         normals,
         diffuse_K,
         specular_K,
@@ -692,6 +693,10 @@ if __name__ == "__main__":
     # Same incoming light for every single point, similar to what we have now.
     incoming_light = incoming_light.unsqueeze(0).expand(P, N, 3).contiguous()
     incoming_light_dirs = incoming_light_dirs.unsqueeze(0).expand(P, N, 3).contiguous()
+    outgoing_dir = outgoing_dir.expand(P, 3).contiguous()
+    outgoing_dir[0] = torch.Tensor(
+        [0, 0, 1]
+    ).cuda()  # If not handeled properly in Slang (safe operations), introduces a NaN.
 
     torch.cuda.synchronize()
     start_time = time.process_time()
