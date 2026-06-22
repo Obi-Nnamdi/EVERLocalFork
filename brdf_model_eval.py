@@ -144,17 +144,17 @@ if __name__ == "__main__":
     # Now plot the results using our points and outputs
 
     fig = plt.figure()
-    fig.set_size_inches(5, 12)
+    fig.set_size_inches(8, 6)
 
     # First plot the rendered image that we're trying to match:
-    ax = plt.subplot(4, 1, 1) 
+    ax = plt.subplot(2, 2, 1)
     ax.set_title("Main Image")
 
     rgb_image = rendered_image[:3, :, :].permute(1, 2, 0).clip(min = 0, max = 1)  # (H, W, C)
     ax.imshow(rgb_image.cpu())
 
     # Now the diffuse image (assume 0 where there's no information)
-    ax = plt.subplot(4, 1, 2) 
+    ax = plt.subplot(2, 2, 2)
     ax.set_title("Diffuse Map")
 
     diffuse_image = convert_pytorch_image_to_matplotlib(
@@ -165,7 +165,7 @@ if __name__ == "__main__":
     ax.imshow(diffuse_image.cpu())
 
     # Same operation for specular
-    ax = plt.subplot(4, 1, 3) 
+    ax = plt.subplot(2, 2, 3)
     ax.set_title("Specular Map")
 
     specular_image = convert_pytorch_image_to_matplotlib(
@@ -176,7 +176,7 @@ if __name__ == "__main__":
     ax.imshow(specular_image.cpu())
 
     # Show normals as normalized r, g, b images in world space (where the range is transformed from (-1, 1) to (0, 1))
-    ax = plt.subplot(4, 1, 4) 
+    ax = plt.subplot(2, 2, 4)
     ax.set_title("Normal Map")
 
     normal_image = convert_pytorch_image_to_matplotlib(
