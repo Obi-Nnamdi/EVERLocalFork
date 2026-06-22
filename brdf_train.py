@@ -26,6 +26,21 @@ from torch import nn
 from pathlib import Path
 import os
 
+
+def nchw_tensor_to_p_by_c(input_tensor: torch.Tensor) -> torch.Tensor:
+    """
+    Converts a (N, C, H, W) tensor into a (P, C) tensor, assuming that N (first dim) is 1, and there a P = H * W points.
+    E.g. (1, 3, H, W) -> (H * W, 3)
+    E.g. (1, 1, H, W) -> (H * W, 1)
+    """
+    N, C, H, W = input_tensor.shape
+    input_tensor = input_tensor.squeeze(0)  # (C, H, W)
+    input_tensor = input_tensor.reshape(C, H * W)
+    input_tensor = input_tensor.T  # (H * W, C)
+
+    return input_tensor
+
+
 if __name__ == "__main__":
     # Set up command line argument parser
     parser = ArgumentParser(description="Manual Renderer Parameters")
@@ -67,7 +82,7 @@ if __name__ == "__main__":
     num_cameras = len(rendering_cameras)
 
     # Set a global image width and height that is used for instanciating the neural network, etc.
-    preview_factor = 4
+    preview_factor = 16
     global_image_height = rendering_cameras[0].image_height // preview_factor
     global_image_width = rendering_cameras[0].image_width // preview_factor
 
@@ -100,12 +115,11 @@ if __name__ == "__main__":
         brdf_normal_model.parameters(),
         lr=lr,
     )
-    # optimizer = torch.optim.SGD(
-    #     brdf_normal_model.parameters(),
-    #     lr=lr,
-    # )
+
+    randomly_sample_output = True  # Loss calculated only at randomly sampled points (specified by point_batch_size) to avoid high VRAM costs.
+
     training_steps = 500
-    point_batch_size = 2048
+    point_batch_size = 2048 * 6
     # TODO: Learning rate scheduler
     # TODO: etc, etc.
 
@@ -136,34 +150,47 @@ if __name__ == "__main__":
 
         # Separate RGB and Depth Images
         rgb_image = rendered_image[:3, :, :].permute(1, 2, 0)  # (H, W, C)
+        rendered_colors = rgb_image.reshape(-1, 3)  # (P, 3)
+
         depth_map = rendered_image[3, :, :]  # (H, W)
 
         # Make our xyz_map for each pixel
         rays_o, rays_d = ever_renderer.get_rays(rendering_cam)
         xyz_map = depth_map_to_xyz(rays_o, rays_d, depth_map)  # (H, W, 3)
+        all_points_xyz = xyz_map.reshape(-1, 3)  # (H * W, 3)
 
         # Ask for our BRDF values
         model_output = brdf_normal_model(rendered_image.unsqueeze(0))
         # print(f"{model_output = }")
 
-        # Calculate loss for a few pixels at once.
-
-        # TODO: just do all rows.
-        rand_rows = torch.randint(0, global_image_height, (point_batch_size,))
-        rand_cols = torch.randint(0, global_image_width, (point_batch_size,))
-
         # Collect Model Outputs
-        Kd = model_output["brdf"]["diffuse"][0, :, rand_rows, rand_cols].T  # (P, 3)
-        Ks = model_output["brdf"]["diffuse"][0, :, rand_rows, rand_cols].T  # (P, 3)
-        spec_c = model_output["brdf"]["specular_c"][
-            0, :, rand_rows, rand_cols
-        ].T.squeeze(
+        Kd = nchw_tensor_to_p_by_c(model_output["brdf"]["diffuse"])  # (P, 3)
+        Ks = nchw_tensor_to_p_by_c(model_output["brdf"]["specular"])  # (P, 3)
+        spec_c = nchw_tensor_to_p_by_c(model_output["brdf"]["specular_c"]).squeeze(
             1
         )  # (P, )
+        camera_normals_unnormed = nchw_tensor_to_p_by_c(
+            model_output["normal"]
+        )  # (P, 3)
 
-        camera_normals_unnormed = model_output["normal"][
-            0, :, rand_rows, rand_cols
-        ].T  # (P, 3)
+        # Select only random points if we're sampling:
+        if randomly_sample_output:
+            # uniformly choose a few points at a time to calculate loss with on low VRAM configs.
+            multinom_weights = torch.ones(
+                (global_image_height * global_image_width,)
+            ).cuda()
+            rand_points = torch.multinomial(
+                multinom_weights, point_batch_size, replacement=False
+            )  # (P, )
+
+            # Select only those indices for all relevant tensors
+            all_points_xyz = all_points_xyz[rand_points, :]
+            rendered_colors = rendered_colors[rand_points, :]
+
+            Kd = Kd[rand_points, :]
+            Ks = Ks[rand_points, :]
+            spec_c = spec_c[rand_points]
+            camera_normals_unnormed = camera_normals_unnormed[rand_points, :]
 
         # Debug w/ fake values
         # Kd = torch.full_like(Kd, 0.2)
@@ -181,12 +208,10 @@ if __name__ == "__main__":
             camera_normals_normed, rendering_cam
         )
 
-        rendered_colors = rgb_image[rand_rows, rand_cols]  # (P, 3)
-
         # Querying Spherical Directions
         incoming_light_tmin = 0.01
         incoming_light_colors, _, incoming_light_dirs = gather_incoming_light_at_points(
-            xyz_map[rand_rows, rand_cols],
+            all_points_xyz,
             ever_renderer,
             tmin=incoming_light_tmin,
             sphere_divisions=incoming_light_sphere_divisions,
@@ -203,7 +228,7 @@ if __name__ == "__main__":
         # BRDF reconstruction
         camera_pos = rendering_cam.camera_center.cuda()  # (3,)
         outgoing_directions = nn.functional.normalize(
-            (camera_pos - xyz_map[rand_rows, rand_cols]), dim=1
+            (camera_pos - all_points_xyz), dim=1
         )  # (P, 3)
 
         outgoing_radiance = eval_blinn_phong_outgoing_radiance(

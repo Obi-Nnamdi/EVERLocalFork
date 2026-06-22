@@ -2,7 +2,6 @@ from arguments import ModelParams, PipelineParams, OptimizationParams
 from argparse import ArgumentParser
 from neural_brdf import (
     BRDF_normal_predictor,
-    Blinn_Phong_BRDF,
     transform_normals_to_world_space,
 )
 from raytracing import (
