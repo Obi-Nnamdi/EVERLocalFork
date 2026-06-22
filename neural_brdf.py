@@ -171,7 +171,7 @@ class EvalBlinnPhongBRDF(Function):
 
 
 def eval_blinn_phong_outgoing_radiance(
-    incoming_light: torch.Tensor,
+    incoming_light_colors: torch.Tensor,
     incoming_light_dirs: torch.Tensor,
     outgoing_directions: torch.Tensor,
     normals: torch.Tensor,
@@ -186,7 +186,7 @@ def eval_blinn_phong_outgoing_radiance(
     Uses :class:`EvalBlinPhongBRDF` in the backend.
 
     Inputs:
-        incoming_light: (P, N, 3) RGB values of incoming light for each direction
+        incoming_light_colors: (P, N, 3) RGB values of incoming light for each direction
         incoming_light_dirs: (P, N, 3) Normalized directions oriented towards the light source in world space
         normal: (P, 3) Surface normals in world space for each of P points
         outgoing_directions: (P, 3) Outgoing (view) normalized direction of radiance, in world space (head at the camera, tip at the surface point) for each point.
@@ -198,9 +198,25 @@ def eval_blinn_phong_outgoing_radiance(
         color: (P, 3) R,G,B values of outgoing radiance at each of P points as observed by the associated outgoing direction.
     """
 
+    # Assertions for debugging.
+    assert incoming_light_colors.dim() == 3
+    assert incoming_light_colors.size(-1) == 3
+
+    assert incoming_light_dirs.is_same_size(incoming_light_colors)
+
+    P, N, _ = incoming_light_dirs.shape
+    assert normals.size(-1) == 3
+    assert normals.size(0) == P
+    assert outgoing_directions.is_same_size(normals)
+    assert diffuse_K.is_same_size(normals)
+    assert specular_K.is_same_size(diffuse_K)
+
+    assert spec_reflect_c.dim() == 1
+    assert spec_reflect_c.numel() == P
+
     # (P, N, 3) R,G,B values of lighting contributions at each of P points for all of the N directions
     outgoing_radiance: torch.Tensor = EvalBlinnPhongBRDF.apply(
-        incoming_light,
+        incoming_light_colors,
         incoming_light_dirs,
         outgoing_directions,
         normals,
@@ -441,12 +457,11 @@ class BRDF_normal_predictor(nn.Module):
                 + self.normal_size,
                 kernel_size=3,
                 padding="same",
-            ),
-            # nn.Sigmoid(),
-            nn.Softplus(beta=10),
-            # nn.LeakyReLU(0.01),
-            # nn.ReLU(),
+            )
         )
+        self.brdf_activation_function = nn.Softplus(beta=10)  # matches EVER method.
+        self.spec_c_activation_function = nn.Sigmoid()
+        self.normal_soft_cap = 2  # Soft capped from [-2, 2]
 
         # TODO: support multiple types of BRDFs eventually?
 
@@ -471,35 +486,46 @@ class BRDF_normal_predictor(nn.Module):
         img_features = self.conv3(img_features)
         # TODO: Use a norm?
 
-        # TODO: Activation functions for these values?
-        # "Soft Capping" Trick: https://pytorch.org/blog/flexattention/
-        # TODO: Remove softplus for this exp? We want it to be positive so I don't mind keeping it.
-        # spec_c = brdf_predictions[:, -1]
-        # spec_c = spec_c / self.max_spec_c
-        # spec_c = nn.functional.tanh(spec_c)
-        # spec_c = spec_c * self.max_spec_c
+        # Extract each of our value types
+        diffuse_brdf_features = img_features[:, : self.diffuse_brdf_size]
+        specular_brdf_features = img_features[
+            :,
+            self.diffuse_brdf_size : self.diffuse_brdf_size + self.spec_brdf_size - 1,
+        ]
+        specular_c_features = img_features[
+            :,
+            self.diffuse_brdf_size
+            + self.spec_brdf_size
+            - 1 : self.diffuse_brdf_size
+            + self.spec_brdf_size,
+        ]
+        normal_features = img_features[:, -self.normal_size :]
+
+        # Apply Activation functions
+        diffuse_brdf_features = self.brdf_activation_function(diffuse_brdf_features)
+        specular_brdf_features = self.brdf_activation_function(specular_brdf_features)
+
+        specular_c_features = (
+            self.spec_c_activation_function(specular_c_features) * self.max_spec_c
+        )  # Clips specular c value to be from 0 -> 16
+
+        # "Soft Capping" Trick to prevent normals from growing too large: https://pytorch.org/blog/flexattention/
+        # TODO: Can try replacing with linear activation function to see if there's a difference in performance
+        normal_features = normal_features / self.normal_soft_cap
+        normal_features = nn.functional.tanh(normal_features)
+        normal_features = normal_features * self.normal_soft_cap
 
         # TODO: refine arguments
         # Best way to structure this...all as one tensor or as multiple?
+
         output_dict = {
             "brdf": {
-                "diffuse": img_features[:, : self.diffuse_brdf_size],
+                "diffuse": diffuse_brdf_features,
                 # RGB + specular C
-                "specular": img_features[
-                    :,
-                    self.diffuse_brdf_size : self.diffuse_brdf_size
-                    + self.spec_brdf_size
-                    - 1,
-                ],
-                "specular_c": img_features[
-                    :,
-                    self.diffuse_brdf_size
-                    + self.spec_brdf_size
-                    - 1 : self.diffuse_brdf_size
-                    + self.spec_brdf_size,
-                ],
+                "specular": specular_brdf_features,
+                "specular_c": specular_c_features,
             },
-            "normal": img_features[:, -self.normal_size :],
+            "normal": normal_features,
         }
 
         return output_dict

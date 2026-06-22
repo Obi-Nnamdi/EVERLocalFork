@@ -2,8 +2,8 @@ from arguments import ModelParams, PipelineParams, OptimizationParams
 from argparse import ArgumentParser
 from neural_brdf import (
     BRDF_normal_predictor,
-    Blinn_Phong_BRDF,
     transform_normals_to_world_space,
+    eval_blinn_phong_outgoing_radiance,
 )
 from raytracing import (
     build_gaussian_renderer,
@@ -77,7 +77,7 @@ if __name__ == "__main__":
     )
 
     # More constants (affecting how much incoming light we use)
-    incoming_light_sphere_divisions = 4
+    incoming_light_sphere_divisions = 20
 
     # Calculate how big our incoming light features will be when input into our model.
     test_sphere_o, _ = generate_spherical_rays(
@@ -94,7 +94,7 @@ if __name__ == "__main__":
     loss_fn = nn.MSELoss()
     color_penalty = 0.5
 
-    lr = 0.0001
+    lr = 0.001
     grad_norm_clip = 1
     optimizer = torch.optim.AdamW(
         brdf_normal_model.parameters(),
@@ -105,7 +105,7 @@ if __name__ == "__main__":
     #     lr=lr,
     # )
     training_steps = 500
-    point_batch_size = 32
+    point_batch_size = 2048
     # TODO: Learning rate scheduler
     # TODO: etc, etc.
 
@@ -138,81 +138,95 @@ if __name__ == "__main__":
         rgb_image = rendered_image[:3, :, :].permute(1, 2, 0)  # (H, W, C)
         depth_map = rendered_image[3, :, :]  # (H, W)
 
+        # Make our xyz_map for each pixel
+        rays_o, rays_d = ever_renderer.get_rays(rendering_cam)
+        xyz_map = depth_map_to_xyz(rays_o, rays_d, depth_map)  # (H, W, 3)
+
         # Ask for our BRDF values
         model_output = brdf_normal_model(rendered_image.unsqueeze(0))
-        print(f"{model_output = }")
+        # print(f"{model_output = }")
 
-        # Iterate through and calculate loss for multiple chosen pixels
-        loss = torch.tensor(0.0).cuda()
-        for i in range(point_batch_size):
-            # TODO: Iterate over all points?
-            rand_row = torch.randint(0, global_image_height, (1,)).item()
-            rand_col = torch.randint(0, global_image_width, (1,)).item()
-            # chosen_point = (10, 10)
-            chosen_point = (int(rand_row), int(rand_col))
+        # Calculate loss for a few pixels at once.
 
-            Kd = model_output["brdf"]["diffuse"][:, :, chosen_point[0], chosen_point[1]]
-            # Ks = torch.tensor([0.2, 0.2, 0.2]).cuda()
-            spec_c = torch.tensor(2.0).cuda()
-            Ks = model_output["brdf"]["specular"][
-                :, :, chosen_point[0], chosen_point[1]
-            ]
-            chosen_normal = model_output["normal"][
-                :, :, chosen_point[0], chosen_point[1]
-            ]
-            # spec_c = model_output["brdf"]["specular_c"]
+        # TODO: just do all rows.
+        rand_rows = torch.randint(0, global_image_height, (point_batch_size,))
+        rand_cols = torch.randint(0, global_image_width, (point_batch_size,))
 
-            learned_brdf = Blinn_Phong_BRDF(Kd, Ks, spec_c)
-            pred_normal = nn.functional.normalize(chosen_normal)
-            # pred_normal = nn.functional.normalize(torch.tensor([[0, 0, 1.0]]).cuda())
+        # Collect Model Outputs
+        Kd = model_output["brdf"]["diffuse"][0, :, rand_rows, rand_cols].T  # (P, 3)
+        Ks = model_output["brdf"]["diffuse"][0, :, rand_rows, rand_cols].T  # (P, 3)
+        spec_c = model_output["brdf"]["specular_c"][
+            0, :, rand_rows, rand_cols
+        ].T.squeeze(
+            1
+        )  # (P, )
 
-            world_normal = transform_normals_to_world_space(pred_normal, rendering_cam)
-            print(f"{world_normal = }")
-            print(f"{Kd = }")
-            print(f"{Ks = }")
-            print(f"{spec_c = }")
+        camera_normals_unnormed = model_output["normal"][
+            0, :, rand_rows, rand_cols
+        ].T  # (P, 3)
 
-            rendered_color = rgb_image[chosen_point]
-            print(f"Color at {chosen_point}: {rendered_color}")
+        # Debug w/ fake values
+        # Kd = torch.full_like(Kd, 0.2)
+        # Ks = torch.full_like(Ks, 0.2)
+        # spec_c = torch.full_like(spec_c, 2.0)
+        # camera_normals_unnormed = torch.full_like(camera_normals_unnormed, 0.2)
 
-            # Get Incoming Light
-            rays_o, rays_d = ever_renderer.get_rays(rendering_cam)
-            xyz_map = depth_map_to_xyz(rays_o, rays_d, depth_map)  # (H, W, 3)
+        # print(f"{Kd.shape  = }")
+        # print(f"{Ks.shape  = }")
+        # print(f"{spec_c.shape  = }")
+        # print(f"{camera_normals_unnormed.shape  = }")
 
-            # Querying Spherical Directions
-            incoming_light_single, _, incoming_light_dirs_single = (
-                gather_incoming_light_at_point(
-                    xyz_map[chosen_point],
-                    ever_renderer,
-                    tmin=0.01,
-                    sphere_divisions=incoming_light_sphere_divisions,
-                )
-            )
+        camera_normals_normed = nn.functional.normalize(camera_normals_unnormed, dim=1)
+        world_normals = transform_normals_to_world_space(
+            camera_normals_normed, rendering_cam
+        )
 
-            # BRDF reconstruction
-            camera_pos = rendering_cam.camera_center.cuda()  # (3,)
+        rendered_colors = rgb_image[rand_rows, rand_cols]  # (P, 3)
 
-            outgoing_dir = nn.functional.normalize(
-                (camera_pos - xyz_map[chosen_point]).reshape(1, 3)
-            )
+        # Querying Spherical Directions
+        incoming_light_tmin = 0.01
+        incoming_light_colors, _, incoming_light_dirs = gather_incoming_light_at_points(
+            xyz_map[rand_rows, rand_cols],
+            ever_renderer,
+            tmin=incoming_light_tmin,
+            sphere_divisions=incoming_light_sphere_divisions,
+            # TODO: Experiment with changing these parameters if I get bad incoming light values.
+            fast=True,
+            precompute_sh=False,
+        )  # (P, N, 3)
 
-            outgoing_radiance = learned_brdf.construct_outgoing_radiance(
-                incoming_light_single,
-                incoming_light_dirs_single,
-                outgoing_dir,
-                world_normal,
-            )
-            # outgoing_radiance = Kd
+        # print(f"{incoming_light_dirs = }")
+        # print(f"{incoming_light_colors = }")
+        # print(f"{incoming_light_colors.shape = }")
+        # print(f"{incoming_light_dirs.shape = }")
 
-            print(f"{outgoing_radiance = }")
-            print(f"{rendered_color - outgoing_radiance = }")
+        # BRDF reconstruction
+        camera_pos = rendering_cam.camera_center.cuda()  # (3,)
+        outgoing_directions = nn.functional.normalize(
+            (camera_pos - xyz_map[rand_rows, rand_cols]), dim=1
+        )  # (P, 3)
 
-            # Calculate loss and update
-            loss += loss_fn(outgoing_radiance, rendered_color) + color_penalty * (
-                torch.norm(Ks) + torch.norm(Kd)
-            )
+        outgoing_radiance = eval_blinn_phong_outgoing_radiance(
+            incoming_light_colors,
+            incoming_light_dirs,
+            outgoing_directions,
+            world_normals,
+            Kd,
+            Ks,
+            spec_c,
+        )  # (P, 3)
 
-        # TODO: Average? Maybe just run once with one stacked tensor w/ MSE?
+        # print(f"{outgoing_radiance.shape = }")
+        print(f"{outgoing_radiance = }")
+
+        # TODO: How to handle "color penalty"? Maybe penalize each of the maps from getting too far away from the main rendered color idk.
+        # loss = (
+        #     loss_fn(outgoing_radiance, rendered_colors)
+        #     + color_penalty * torch.norm(Ks)
+        #     + torch.norm(Kd)
+        # )
+        loss = loss_fn(outgoing_radiance, rendered_colors)
+
         print(f"{loss = }")
         loss.backward()
 
