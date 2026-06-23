@@ -24,6 +24,8 @@ from torch import nn
 from pathlib import Path
 import os
 
+from typing import cast
+
 from torch.utils.tensorboard.writer import SummaryWriter
 
 def nchw_tensor_to_p_by_c(input_tensor: torch.Tensor) -> torch.Tensor:
@@ -46,26 +48,58 @@ if __name__ == "__main__":
     lp = ModelParams(parser)
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
-    parser.add_argument("--ip", type=str, default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=6009)
-    parser.add_argument("--resume_from", type=Path, default=None)
+    parser.add_argument(
+        "--resume_from",
+        type=Path,
+        default=None,
+        help="Checkpoint file to resume BRDF training model from.",
+    )
+    parser.add_argument(
+        "--start_ever_checkpoint",
+        type=str,
+        default=None,
+        help="Checkpoint to resume ever model from.",
+    )
     parser.add_argument("--detect_anomaly", action="store_true", default=False)
-    parser.add_argument(
-        "--test_iterations", nargs="+", type=int, default=[7_000, 30_000]
-    )
-    parser.add_argument(
-        "--save_iterations", nargs="+", type=int, default=[7_000, 30_000]
-    )
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
-    parser.add_argument("--start_checkpoint", type=str, default=None)
+    parser.add_argument(
+        "--training_steps",
+        type=int,
+        default=500 * 20,
+        help="How many steps to train BRDF model for.",
+    )
+    parser.add_argument(
+        "--checkpoint_interval",
+        type=int,
+        default=250,
+        help="How often to save model checkpoints.",
+    )
+    parser.add_argument(
+        "--image_reporting_interval",
+        type=int,
+        default=100,
+        help="How often to save output model images to the tensorboard.",
+    )
+    parser.add_argument(
+        "--randomly_sample_pixels_for_loss",
+        "--rs",
+        action="store_true",
+        help="Have loss calculated only at randomly sampled points (specified by point_batch_size) to avoid high VRAM costs.",
+        default=False,
+    )
+    parser.add_argument(
+        "--point_batch_size",
+        default=2048 * 12,
+        type=int,
+        help="How many points to sample at a time for loss if randomly_sample_pixels_for_loss is false.",
+    )
+    parser.add_argument(
+        "--preview_factor",
+        default=4,
+        type=int,
+        help="How far to downsample the original resolution that the dataset cameras were rendered at.",
+    )
     args = parser.parse_args(sys.argv[1:])
-    args.save_iterations.append(args.iterations)
-
-    print(f"{args.test_iterations = }")
-    print(f"{args.save_iterations = }")
-    print(f"{args.resume_from = }")
-    # args.checkpoint_iterations.append(args.iterations)
 
     print("Optimizing " + args.model_path)
 
@@ -73,11 +107,13 @@ if __name__ == "__main__":
     safe_state(args.quiet)
 
     # Load Gaussians
-    model_params: ModelParams = lp.extract(args)
+    model_params: ModelParams = cast(ModelParams, lp.extract(args))
 
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
     gaussians = load_gaussian_model(
-        model_params, op.extract(args), args.start_checkpoint
+        model_params,
+        cast(OptimizationParams, op.extract(args)),
+        args.start_ever_checkpoint,
     )
     print(f"Loaded Gaussian, Active SH Degree: {gaussians.active_sh_degree}")
 
@@ -94,13 +130,16 @@ if __name__ == "__main__":
     print(f"Model Running Directory: {model_save_path.parent.absolute()}")
 
     # Set a global image width and height that is used for instanciating the neural network, etc.
-    preview_factor = 16
-    global_image_height = rendering_cameras[0].image_height // preview_factor
-    global_image_width = rendering_cameras[0].image_width // preview_factor
+    global_image_height: int = rendering_cameras[0].image_height // args.preview_factor
+    global_image_width: int = rendering_cameras[0].image_width // args.preview_factor
+
+    print(
+        f"Rendering images at a {global_image_width} x {global_image_height} resolution (W x H)."
+    )
 
     # Set up our initial renderer
     ever_renderer = build_gaussian_renderer(
-        gaussians, rendering_cameras[0], pp.extract(args)
+        gaussians, rendering_cameras[0], cast(PipelineParams, pp.extract(args))
     )
 
     # More constants (affecting how much incoming light we use)
@@ -135,10 +174,6 @@ if __name__ == "__main__":
         lr=lr,
     )
 
-    randomly_sample_output = True  # Loss calculated only at randomly sampled points (specified by point_batch_size) to avoid high VRAM costs.
-
-    training_steps = 500 * 20
-    point_batch_size = 2048 * 12
     # TODO: Learning rate scheduler
     # TODO: etc, etc.
 
@@ -146,7 +181,7 @@ if __name__ == "__main__":
     # allocated_mem = torch.cuda.memory.memory_allocated() / 1024 / 1024 / 1024
     # print(f"{reserved_mem = }")
     # Main training loop:
-    for step_num in tqdm(range(training_steps)):
+    for step_num in tqdm(range(args.training_steps)):
         optimizer.zero_grad()
         torch.cuda.empty_cache()
 
@@ -194,13 +229,13 @@ if __name__ == "__main__":
         )  # (P, 3)
 
         # Select only random points if we're sampling:
-        if randomly_sample_output:
+        if args.randomly_sample_pixels_for_loss:
             # uniformly choose a few points at a time to calculate loss with on low VRAM configs.
             multinom_weights = torch.ones(
                 (global_image_height * global_image_width,)
             ).cuda()
             rand_points = torch.multinomial(
-                multinom_weights, point_batch_size, replacement=False
+                multinom_weights, args.point_batch_size, replacement=False
             )  # (P, )
 
             # Select only those indices for all relevant tensors
@@ -290,8 +325,7 @@ if __name__ == "__main__":
         writer.add_scalar("Train/loss", loss.detach().cpu(), step_num)
         writer.add_scalar("Train/grad_norm_1", total_norm.cpu(), step_num)
 
-        reporting_interval = 100
-        if step_num % reporting_interval == 0:
+        if step_num % args.image_reporting_interval == 0:
             # Add images for diffuse, specular, original, etc.
             # TODO: Could be a matplotlib figure
             # TODO: Add normal and spec_c images?
@@ -309,8 +343,7 @@ if __name__ == "__main__":
                 step_num,
             )
 
-        checkpoint_interval = 250
-        if step_num % checkpoint_interval == 0 and step_num != 0:
+        if step_num % args.checkpoint_interval == 0 and step_num != 0:
             model_checkpoint_path = model_save_path.parent / f"brdf_model_{step_num}.pt"
             torch.save(
                 brdf_normal_model.state_dict(),
