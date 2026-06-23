@@ -8,9 +8,7 @@ from neural_brdf import (
 from raytracing import (
     build_gaussian_renderer,
     depth_map_to_xyz,
-    gather_incoming_light_at_point,
     get_cameras,
-    get_rendering_cam,
     load_gaussian_model,
     render_gaussians,
     generate_spherical_rays,
@@ -26,6 +24,7 @@ from torch import nn
 from pathlib import Path
 import os
 
+from torch.utils.tensorboard.writer import SummaryWriter
 
 def nchw_tensor_to_p_by_c(input_tensor: torch.Tensor) -> torch.Tensor:
     """
@@ -49,7 +48,7 @@ if __name__ == "__main__":
     pp = PipelineParams(parser)
     parser.add_argument("--ip", type=str, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=6009)
-    parser.add_argument("--debug_from", type=int, default=-1)
+    parser.add_argument("--resume_from", type=Path, default=None)
     parser.add_argument("--detect_anomaly", action="store_true", default=False)
     parser.add_argument(
         "--test_iterations", nargs="+", type=int, default=[7_000, 30_000]
@@ -62,6 +61,10 @@ if __name__ == "__main__":
     parser.add_argument("--start_checkpoint", type=str, default=None)
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
+
+    print(f"{args.test_iterations = }")
+    print(f"{args.save_iterations = }")
+    print(f"{args.resume_from = }")
     # args.checkpoint_iterations.append(args.iterations)
 
     print("Optimizing " + args.model_path)
@@ -81,6 +84,15 @@ if __name__ == "__main__":
     rendering_cameras = get_cameras(model_params)
     num_cameras = len(rendering_cameras)
 
+    # Create our SummaryWriter for training logging
+    model_checkpoint_dir = "brdf_models"
+    model_save_path = (
+        Path(model_params.model_path) / model_checkpoint_dir / "brdf_model.pt"
+    )
+    os.makedirs(model_save_path.parent, exist_ok=True)
+    writer = SummaryWriter(log_dir=model_save_path.parent / "runs")
+    print(f"Model Running Directory: {model_save_path.parent.absolute()}")
+
     # Set a global image width and height that is used for instanciating the neural network, etc.
     preview_factor = 16
     global_image_height = rendering_cameras[0].image_height // preview_factor
@@ -95,15 +107,22 @@ if __name__ == "__main__":
     incoming_light_sphere_divisions = 20
 
     # Calculate how big our incoming light features will be when input into our model.
-    test_sphere_o, _ = generate_spherical_rays(
-        torch.zeros((3,)), incoming_light_sphere_divisions
-    )
-    incoming_light_size = test_sphere_o.size(0) * 3  # N vectors that have [r, g, b]
+    # test_sphere_o, _ = generate_spherical_rays(
+    #     torch.zeros((3,)), incoming_light_sphere_divisions
+    # )
+    # incoming_light_size = test_sphere_o.size(0) * 3  # N vectors that have [r, g, b]
 
     # Instanciate the BRDF_normal_predictor
     brdf_normal_model = BRDF_normal_predictor(global_image_height, global_image_width)
     brdf_normal_model = brdf_normal_model.cuda()
     brdf_normal_model.train()
+
+    # Load checkpoint if we're resuming from a checkpoint
+    if args.resume_from is not None:
+        print(f"Loading checkpoint from {args.resume_from}.")
+        model_state_dict = torch.load(args.resume_from)
+        brdf_normal_model.load_state_dict(model_state_dict)
+        print(f"Loaded model checkpoint.")
 
     # Training Config
     loss_fn = nn.MSELoss()
@@ -118,8 +137,8 @@ if __name__ == "__main__":
 
     randomly_sample_output = True  # Loss calculated only at randomly sampled points (specified by point_batch_size) to avoid high VRAM costs.
 
-    training_steps = 500
-    point_batch_size = 2048 * 6
+    training_steps = 500 * 20
+    point_batch_size = 2048 * 12
     # TODO: Learning rate scheduler
     # TODO: etc, etc.
 
@@ -127,12 +146,13 @@ if __name__ == "__main__":
     # allocated_mem = torch.cuda.memory.memory_allocated() / 1024 / 1024 / 1024
     # print(f"{reserved_mem = }")
     # Main training loop:
-    for i in tqdm(range(training_steps)):
+    for step_num in tqdm(range(training_steps)):
         optimizer.zero_grad()
         torch.cuda.empty_cache()
 
-        # TODO: Have random Camera index and chosen point
-        camera_index = 1
+        # Random Camera index and chosen point
+        camera_index = int(torch.randint(num_cameras, (1,)).item())
+        print(f"Camera Index: {camera_index}")
 
         # Set up the camera we're rendering with
         # TODO: Can just render all images from all cameras once, right?
@@ -251,29 +271,55 @@ if __name__ == "__main__":
         #     + torch.norm(Kd)
         # )
         loss = loss_fn(outgoing_radiance, rendered_colors)
-
         print(f"{loss = }")
         loss.backward()
-
         # Clip grad norms
         # torch.nn.utils.clip_grad_norm_(brdf_normal_model.parameters(), grad_norm_clip)
 
         # Check gradient norms
-        # parameters = brdf_normal_model.fc1.parameters()
-        # norm_type = 2
-        # total_norm = torch.norm(
-        #     torch.stack([torch.norm(p.grad.detach(), norm_type) for p in parameters]), norm_type)
-
-        # print(f"{total_norm = }")
+        parameters = brdf_normal_model.conv1.parameters()
+        norm_type = 2
+        total_norm = torch.norm(
+            torch.stack([torch.norm(p.grad.detach(), norm_type) for p in parameters]),
+            norm_type,
+        )
 
         optimizer.step()
 
+        # Add loss and other metrics
+        writer.add_scalar("Train/loss", loss.detach().cpu(), step_num)
+        writer.add_scalar("Train/grad_norm_1", total_norm.cpu(), step_num)
+
+        reporting_interval = 100
+        if step_num % reporting_interval == 0:
+            # Add images for diffuse, specular, original, etc.
+            # TODO: Could be a matplotlib figure
+            # TODO: Add normal and spec_c images?
+            writer.add_image(
+                f"camera_image", rgb_image.clip(0, 1), step_num, dataformats="HWC"
+            )
+            writer.add_image(
+                f"diffuse_output",
+                model_output["brdf"]["diffuse"][0].clip(0, 1),
+                step_num,
+            )
+            writer.add_image(
+                f"specular_output",
+                model_output["brdf"]["specular"][0].clip(0, 1),
+                step_num,
+            )
+
+        checkpoint_interval = 250
+        if step_num % checkpoint_interval == 0 and step_num != 0:
+            model_checkpoint_path = model_save_path.parent / f"brdf_model_{step_num}.pt"
+            torch.save(
+                brdf_normal_model.state_dict(),
+                model_checkpoint_path,
+            )
+            print(f"Saved model at {model_checkpoint_path.absolute()}")
+    # Flush writer
+    writer.flush()
     # TODO: Save model, optimizer, and epoch for resuming
-    model_checkpoint_dir = "brdf_models"
-    model_save_path = (
-        Path(model_params.model_path) / model_checkpoint_dir / "brdf_model.pt"
-    )
-    os.makedirs(model_save_path.parent, exist_ok=True)
     torch.save(brdf_normal_model.state_dict(), model_save_path)
     print(f"Saved model at {model_save_path.absolute()}")
     # All done

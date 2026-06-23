@@ -13,3 +13,7 @@ tensorly
 matplotlib
 # Pin setuptools version to keep pkg_resources dependency
 setuptools==80.10.2
+
+# For viewing training progress with tensorflow and tensorboard
+tensorflow[and-cuda]
+tensorboard

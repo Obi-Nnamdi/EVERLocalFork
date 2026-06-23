@@ -102,7 +102,9 @@ if __name__ == "__main__":
 
     # Load model from checkpoint
     model_checkpoint_dir = "brdf_models"
-    model_checkpoint_path = Path(model_params.model_path) / model_checkpoint_dir / "brdf_model.pt"
+    model_checkpoint_path = (
+        Path(model_params.model_path) / model_checkpoint_dir / "brdf_model_1500.pt"
+    )
     print(f"Loading checkpoint at {model_checkpoint_path.absolute()}")
 
     model_state_dict = torch.load(model_checkpoint_path)
@@ -111,7 +113,7 @@ if __name__ == "__main__":
     print(f"Loaded model checkpoint.")
 
     # Create a figure showing predicted diffuse, specular, and normal maps:
-    camera_index = 1
+    camera_index = 128
     rendering_cam = rendering_cameras[camera_index]
     # print(f"{global_image_width = }")
     # print(f"{global_image_height = }")
