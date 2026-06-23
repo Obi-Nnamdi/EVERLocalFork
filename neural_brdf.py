@@ -11,7 +11,7 @@ from raytracing import (
 )
 from utils.general_utils import safe_state
 import sys
-from typing import Any
+from typing import TypedDict, Any
 
 from scene.cameras import MiniCam
 from gaussian_renderer.ever import get_ray_directions
@@ -237,6 +237,19 @@ def eval_blinn_phong_outgoing_radiance(
         ~outgoing_radiance_inf_mask, dim=1
     )
 
+
+class BRDFModelOutput(TypedDict):
+    diffuse: torch.Tensor
+    specular: torch.Tensor
+    specular_c: torch.Tensor
+
+
+class FullModelOutput(TypedDict):
+    # All tensors returned as shape (N, C, H, W).
+    brdf: BRDFModelOutput
+    normal: torch.Tensor
+
+
 class BRDF_normal_predictor(nn.Module):
 
     def __init__(self, img_height: int, img_width: int) -> None:
@@ -284,7 +297,7 @@ class BRDF_normal_predictor(nn.Module):
 
         # TODO: support multiple types of BRDFs eventually?
 
-    def forward(self, image: torch.Tensor) -> dict[str, torch.Tensor]:
+    def forward(self, image: torch.Tensor) -> FullModelOutput:
         """
         Input:
             image: (N, C, H, W)
