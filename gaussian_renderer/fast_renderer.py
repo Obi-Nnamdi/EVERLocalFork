@@ -130,7 +130,6 @@ class FastRenderer:
 
             print(f"Took {end_time - start_time:.2f}s to calculate normals. (k = {normal_k})")
 
-        print(f"Time Step: {self.time_step}")
         net_color = eval_sh2(
             self.pc.get_xyz,
             shs,
@@ -139,11 +138,17 @@ class FastRenderer:
             normals=self.normals,
             time_step=self.time_step,
         )
-        self.time_step += 1
         # ic(net_color, SH2RGB(features))
         net_color = torch.nn.functional.softplus(net_color, beta=10)
         features = RGB2SH(net_color).reshape(-1, 1, 3)
         return features.contiguous()
+
+    def increment_time_step(self) -> None:
+        """
+        Increment the time step for doing more advanced rendering effects.
+        """
+        self.time_step += 1
+        print(f"Time Step: {self.time_step}")
 
     def get_color_from_ray_origin(self, ray_o: torch.Tensor) -> torch.Tensor:
         """
