@@ -403,8 +403,8 @@ def plot_incoming_light_and_outgoing_radiance(
         outgoing_dir[:, 1],
         outgoing_dir[:, 2],
         color="g",
-        arrow_length_ratio=0.05,
-        linewidth=2,
+        arrow_length_ratio=0.3,
+        linewidth=3,
         label="Outgoing Direction",
         alpha=1,
     )

@@ -389,17 +389,19 @@ if __name__ == "__main__":
                 step_num,
             )
 
-            # Choose a random point and plot the incoming -> outgoing radiance
-            point_loc = (240, 120)  # (row, col)
+            if not brdf_args.randomly_sample_loss:
+                # Choose a random point and plot the incoming -> outgoing radiance
+                rand_row = int(torch.randint(global_image_height, (1,)).item())
+                rand_col = int(torch.randint(global_image_width, (1,)).item())
+                point_loc = (rand_row, rand_col)
 
-            point_index = (
-                point_loc[0] * global_image_width + point_loc[1]
-            )  # Row-major order
-
-            if brdf_args.randomly_sample_loss:
+                point_index = (
+                    point_loc[0] * global_image_width + point_loc[1]
+                )  # Row-major order`
+            else:
                 # Use an index of the "rand_points" array instead (we've downsampled our output)
                 assert rand_points is not None
-                point_index = 2
+                point_index = int(torch.randint(rand_points.size(0), (1,)).item())
 
                 # Recalculate the true location in the image it's from.
                 actual_point = int(rand_points[point_index].item())
@@ -407,11 +409,11 @@ if __name__ == "__main__":
                 img_col = actual_point % global_image_width
                 point_loc = (img_row, img_col)
 
-            fig = plt.figure(dpi=300, figsize=(8, 5))
+            fig = plt.figure(dpi=300, figsize=(9, 3))
 
             ax = fig.add_subplot(1, 2, 1, projection="3d")
             plt.suptitle(
-                f"Incoming Light for Camera {camera_index} at point (row, col) {point_loc}"
+                f"Incoming Light for Camera {camera_index} at point {point_loc} (row, col)"
             )
 
             plot_incoming_light_and_outgoing_radiance(
