@@ -11,6 +11,7 @@
 
 import math
 import os
+from pathlib import Path
 import sys
 from argparse import ArgumentParser, Namespace
 
@@ -146,17 +147,44 @@ class OptimizationParams(ParamGroup):
         self.fallback_xy_grad = False
 
         self.random_background = False
-        
+
         # Bilateral grid parameters
         self.use_bilateral_grid = False
         self.bilateral_grid_shape = [16, 16, 8]
         self.bilateral_grid_lr = 0.003  # Match gsplat's default
-        
+
         # Default to 10.0 (gsplat's value) but keep it configurable
         # Explicitly set as float to ensure command line arguments work with decimal values
         self.lambda_tv: float = 10.0
-        
+
         super().__init__(parser, "Optimization Parameters")
+
+
+class BRDFOptmizationParams(ParamGroup):
+    """
+    Parameters for BRDF Optimization.
+    """
+
+    def __init__(self, parser: ArgumentParser):
+        self.training_steps = 500 * 20  # How many steps to train BRDF model for
+        self.resume_from = ""  # Checkpoint file to resume BRDF training model from.
+
+        self.checkpoint_interval = 250  # How often to save model checkpoints.
+        self.image_reporting_interval = (
+            250  # How often to save output model images to the tensorboard.
+        )
+
+        # Have loss calculated only at randomly sampled points (specified by point_batch_size) to avoid high VRAM costs.
+        self.randomly_sample_loss = False
+        self.point_batch_size = 2048 * 12
+
+        # How far to downsample the original resolution that the dataset cameras were rendered at.
+        self.preview_factor = 4
+        super().__init__(parser, "BRDF Optimization Parameters")
+
+    def extract(self, args):
+        params = super().extract(args)
+        return params
 
 
 def get_combined_args(parser: ArgumentParser):

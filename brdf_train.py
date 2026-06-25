@@ -1,9 +1,15 @@
-from arguments import ModelParams, PipelineParams, OptimizationParams
+from arguments import (
+    ModelParams,
+    PipelineParams,
+    OptimizationParams,
+    BRDFOptmizationParams,
+)
 from argparse import ArgumentParser
 from neural_brdf import (
     BRDF_normal_predictor,
     transform_normals_to_world_space,
     eval_blinn_phong_outgoing_radiance,
+    FullModelOutput,
 )
 from raytracing import (
     build_gaussian_renderer,
@@ -13,6 +19,7 @@ from raytracing import (
     render_gaussians,
     generate_spherical_rays,
     gather_incoming_light_at_points,
+    plot_incoming_light_and_outgoing_radiance,
 )
 from utils.general_utils import safe_state
 import sys
@@ -27,6 +34,12 @@ import os
 from typing import cast
 
 from torch.utils.tensorboard.writer import SummaryWriter
+# Graphing
+import matplotlib
+
+matplotlib.use("Agg")  # headless mode
+import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 
 def nchw_tensor_to_p_by_c(input_tensor: torch.Tensor) -> torch.Tensor:
     """
@@ -42,18 +55,32 @@ def nchw_tensor_to_p_by_c(input_tensor: torch.Tensor) -> torch.Tensor:
     return input_tensor
 
 
+def p_by_c_tensor_to_chw(input_tensor: torch.Tensor, H: int, W: int) -> torch.Tensor:
+    """
+    Converts a (P, C) tensor into a (C, H, W) tensor, assuming that P was created by collapsing the (H,W) dimensions.
+    E.g. (H * W, 3) -> (1, 3, H, W)
+    """
+    P, C = input_tensor.shape
+    input_tensor = input_tensor.reshape(H, W, C)  # (H, W, C)
+    input_tensor = input_tensor.permute(2, 0, 1)  # (C, H, W)
+
+    return input_tensor
+
+
+def pretty_display_normal_tensor(normal_tensor: torch.Tensor) -> torch.Tensor:
+    """
+    Cleans up a normal tensor by mapping it from (-1, 1) -> (0, 1)
+    """
+    return (normal_tensor / 2) + 0.5
+
+
 if __name__ == "__main__":
     # Set up command line argument parser
     parser = ArgumentParser(description="Manual Renderer Parameters")
     lp = ModelParams(parser)
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
-    parser.add_argument(
-        "--resume_from",
-        type=Path,
-        default=None,
-        help="Checkpoint file to resume BRDF training model from.",
-    )
+    brdf_optim_params = BRDFOptmizationParams(parser)
     parser.add_argument(
         "--start_ever_checkpoint",
         type=str,
@@ -62,44 +89,10 @@ if __name__ == "__main__":
     )
     parser.add_argument("--detect_anomaly", action="store_true", default=False)
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument(
-        "--training_steps",
-        type=int,
-        default=500 * 20,
-        help="How many steps to train BRDF model for.",
-    )
-    parser.add_argument(
-        "--checkpoint_interval",
-        type=int,
-        default=250,
-        help="How often to save model checkpoints.",
-    )
-    parser.add_argument(
-        "--image_reporting_interval",
-        type=int,
-        default=100,
-        help="How often to save output model images to the tensorboard.",
-    )
-    parser.add_argument(
-        "--randomly_sample_pixels_for_loss",
-        "--rs",
-        action="store_true",
-        help="Have loss calculated only at randomly sampled points (specified by point_batch_size) to avoid high VRAM costs.",
-        default=False,
-    )
-    parser.add_argument(
-        "--point_batch_size",
-        default=2048 * 12,
-        type=int,
-        help="How many points to sample at a time for loss if randomly_sample_pixels_for_loss is false.",
-    )
-    parser.add_argument(
-        "--preview_factor",
-        default=4,
-        type=int,
-        help="How far to downsample the original resolution that the dataset cameras were rendered at.",
-    )
     args = parser.parse_args(sys.argv[1:])
+    brdf_args = cast(
+        BRDFOptmizationParams, brdf_optim_params.extract(args)
+    )  # NOTE: Lying to the type checker, but it's close enough.
 
     print("Optimizing " + args.model_path)
 
@@ -130,12 +123,21 @@ if __name__ == "__main__":
     print(f"Model Running Directory: {model_save_path.parent.absolute()}")
 
     # Set a global image width and height that is used for instanciating the neural network, etc.
-    global_image_height: int = rendering_cameras[0].image_height // args.preview_factor
-    global_image_width: int = rendering_cameras[0].image_width // args.preview_factor
+    global_image_height: int = (
+        rendering_cameras[0].image_height // brdf_args.preview_factor
+    )
+    global_image_width: int = (
+        rendering_cameras[0].image_width // brdf_args.preview_factor
+    )
 
     print(
         f"Rendering images at a {global_image_width} x {global_image_height} resolution (W x H)."
     )
+
+    if brdf_args.randomly_sample_loss:
+        print(
+            f"Sampling {brdf_args.point_batch_size} pixels per iteration for loss calculation."
+        )
 
     # Set up our initial renderer
     ever_renderer = build_gaussian_renderer(
@@ -157,9 +159,9 @@ if __name__ == "__main__":
     brdf_normal_model.train()
 
     # Load checkpoint if we're resuming from a checkpoint
-    if args.resume_from is not None:
-        print(f"Loading checkpoint from {args.resume_from}.")
-        model_state_dict = torch.load(args.resume_from)
+    if brdf_args.resume_from != "":
+        print(f"Loading checkpoint from {brdf_args.resume_from}.")
+        model_state_dict = torch.load(Path(brdf_args.resume_from))
         brdf_normal_model.load_state_dict(model_state_dict)
         print(f"Loaded model checkpoint.")
 
@@ -181,7 +183,7 @@ if __name__ == "__main__":
     # allocated_mem = torch.cuda.memory.memory_allocated() / 1024 / 1024 / 1024
     # print(f"{reserved_mem = }")
     # Main training loop:
-    for step_num in tqdm(range(args.training_steps)):
+    for step_num in tqdm(range(brdf_args.training_steps)):
         tqdm.write(f"========Step {step_num}:========")
         optimizer.zero_grad()
         torch.cuda.empty_cache()
@@ -216,7 +218,9 @@ if __name__ == "__main__":
         all_points_xyz = xyz_map.reshape(-1, 3)  # (H * W, 3)
 
         # Ask for our BRDF values
-        model_output = brdf_normal_model(rendered_image.unsqueeze(0))
+        model_output = cast(
+            FullModelOutput, brdf_normal_model(rendered_image.unsqueeze(0))
+        )
         # print(f"{model_output = }")
 
         # Collect Model Outputs
@@ -230,13 +234,14 @@ if __name__ == "__main__":
         )  # (P, 3)
 
         # Select only random points if we're sampling:
-        if args.randomly_sample_pixels_for_loss:
+        rand_points = None
+        if brdf_args.randomly_sample_loss:
             # uniformly choose a few points at a time to calculate loss with on low VRAM configs.
             multinom_weights = torch.ones(
                 (global_image_height * global_image_width,)
             ).cuda()
             rand_points = torch.multinomial(
-                multinom_weights, args.point_batch_size, replacement=False
+                multinom_weights, brdf_args.point_batch_size, replacement=False
             )  # (P, )
 
             # Select only those indices for all relevant tensors
@@ -326,7 +331,7 @@ if __name__ == "__main__":
         writer.add_scalar("Train/loss", loss.detach().cpu(), step_num)
         writer.add_scalar("Train/grad_norm_1", total_norm.cpu(), step_num)
 
-        if step_num % args.image_reporting_interval == 0:
+        if step_num % brdf_args.image_reporting_interval == 0:
             # Add images for diffuse, specular, original, etc.
             # TODO: Could be a matplotlib figure
             # TODO: Add normal and spec_c images?
@@ -343,8 +348,91 @@ if __name__ == "__main__":
                 model_output["brdf"]["specular"][0].clip(0, 1),
                 step_num,
             )
+            writer.add_image(
+                f"specular_c_mapped_0_1",
+                model_output["brdf"]["specular_c"][0] / brdf_normal_model.max_spec_c,
+                step_num,
+            )
 
-        if step_num % args.checkpoint_interval == 0 and step_num != 0:
+            if brdf_args.randomly_sample_loss:
+                # Recalculate world normals since they may be subsampled.
+                # TODO: Handle this better, as it takes additional VRAM.
+                full_cam_normals = nchw_tensor_to_p_by_c(
+                    model_output["normal"]
+                )  # (X, 3)
+                full_cam_normals = nn.functional.normalize(
+                    full_cam_normals, dim=1
+                )  # (X, 3)
+                full_world_normals = transform_normals_to_world_space(
+                    full_cam_normals, rendering_cam
+                )  # (X, 3)
+            else:
+                full_cam_normals = camera_normals_normed
+                full_world_normals = world_normals
+
+            writer.add_image(
+                f"camera_normal",
+                pretty_display_normal_tensor(
+                    p_by_c_tensor_to_chw(
+                        full_cam_normals, global_image_height, global_image_width
+                    )
+                ),
+                step_num,
+            )
+            writer.add_image(
+                f"world_normal",
+                pretty_display_normal_tensor(
+                    p_by_c_tensor_to_chw(
+                        full_world_normals, global_image_height, global_image_width
+                    )
+                ),
+                step_num,
+            )
+
+            # Choose a random point and plot the incoming -> outgoing radiance
+            point_loc = (240, 120)  # (row, col)
+
+            point_index = (
+                point_loc[0] * global_image_width + point_loc[1]
+            )  # Row-major order
+
+            if brdf_args.randomly_sample_loss:
+                # Use an index of the "rand_points" array instead (we've downsampled our output)
+                assert rand_points is not None
+                point_index = 2
+
+                # Recalculate the true location in the image it's from.
+                actual_point = int(rand_points[point_index].item())
+                img_row = actual_point // global_image_width
+                img_col = actual_point % global_image_width
+                point_loc = (img_row, img_col)
+
+            fig = plt.figure(dpi=300, figsize=(8, 5))
+
+            ax = fig.add_subplot(1, 2, 1, projection="3d")
+            plt.suptitle(
+                f"Incoming Light for Camera {camera_index} at point (row, col) {point_loc}"
+            )
+
+            plot_incoming_light_and_outgoing_radiance(
+                incoming_light_colors[point_index],
+                incoming_light_dirs[point_index],
+                outgoing_radiance[point_index : point_index + 1],
+                outgoing_directions[point_index : point_index + 1],
+            )
+
+            # Show the point we used to generate the plot
+            ax = fig.add_subplot(1, 2, 2)
+            ax.imshow(rgb_image.cpu().clip(0, 1))
+            ax.plot(point_loc[1], point_loc[0], marker="x", color="r")
+            # ax.set_xlim(point_loc[0] - 200, point_loc[0] + 200)
+            # ax.set_aspect("equal")
+
+            plt.savefig(model_save_path.parent.parent / "incoming_light_test.png")
+            writer.add_figure("incoming_light_readout", fig, step_num)
+            writer.flush()
+
+        if step_num % brdf_args.checkpoint_interval == 0 and step_num != 0:
             model_checkpoint_path = model_save_path.parent / f"brdf_model_{step_num}.pt"
             torch.save(
                 brdf_normal_model.state_dict(),

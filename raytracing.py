@@ -29,6 +29,7 @@ import matplotlib
 
 matplotlib.use("Agg")  # headless mode
 import matplotlib.pyplot as plt
+from matplotlib.axes import Axes
 
 def load_gaussian_model(
     model_params: ModelParams,
@@ -366,6 +367,55 @@ def get_cameras(model_params: ModelParams) -> list[MiniCam]:
         camera_arr = json.load(f)
 
     return [extract_cam_from_json(camera) for camera in camera_arr]
+
+
+def plot_incoming_light_and_outgoing_radiance(
+    incoming_light_colors: torch.Tensor,
+    incoming_light_locations: torch.Tensor,
+    outgoing_radiance: torch.Tensor,
+    outgoing_dir: torch.Tensor,
+) -> Axes:
+    """
+    Plot the incoming light and outgoing radiance at a point.
+    Inputs:
+        incoming_light: (N, 3)
+        outgoing_radiance: (1, 3)
+        outgoing_dir: (1, 3)
+        incoming_light_locations: (N, 3)
+    """
+    incoming_light_locations = incoming_light_locations.detach().cpu()
+    incoming_light_colors = incoming_light_colors.detach().cpu().clip(0, 1)
+    outgoing_dir = outgoing_dir.detach().cpu()
+    outgoing_radiance = outgoing_radiance.detach().cpu().clip(0, 1)
+
+    ax = plt.gca()
+    ax.scatter(
+        incoming_light_locations[:, 0],
+        incoming_light_locations[:, 1],
+        incoming_light_locations[:, 2],
+        c=incoming_light_colors,
+    )
+    ax.quiver3D(
+        [0],
+        [0],
+        [0],
+        outgoing_dir[:, 0],
+        outgoing_dir[:, 1],
+        outgoing_dir[:, 2],
+        color="g",
+        arrow_length_ratio=0.05,
+        linewidth=2,
+        label="Outgoing Direction",
+        alpha=1,
+    )
+
+    # Put the outgoing radiance in the center and make it larger
+    ax.scatter([0], [0], 0, c=outgoing_radiance, s=150)
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z")
+
+    return ax
 
 
 if __name__ == "__main__":
