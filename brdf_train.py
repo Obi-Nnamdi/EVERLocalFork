@@ -184,13 +184,11 @@ if __name__ == "__main__":
     # print(f"{reserved_mem = }")
     # Main training loop:
     for step_num in tqdm(range(brdf_args.training_steps)):
-        tqdm.write(f"========Step {step_num}:========")
         optimizer.zero_grad()
         torch.cuda.empty_cache()
 
         # Random Camera index and chosen point
         camera_index = int(torch.randint(num_cameras, (1,)).item())
-        tqdm.write(f"Camera Index: {camera_index}")
 
         # Set up the camera we're rendering with
         # TODO: Can just render all images from all cameras once, right?
@@ -302,9 +300,6 @@ if __name__ == "__main__":
             spec_c,
         )  # (P, 3)
 
-        # print(f"{outgoing_radiance.shape = }")
-        tqdm.write(f"{outgoing_radiance = }")
-
         # TODO: How to handle "color penalty"? Maybe penalize each of the maps from getting too far away from the main rendered color idk.
         # loss = (
         #     loss_fn(outgoing_radiance, rendered_colors)
@@ -312,7 +307,6 @@ if __name__ == "__main__":
         #     + torch.norm(Kd)
         # )
         loss = loss_fn(outgoing_radiance, rendered_colors)
-        tqdm.write(f"{loss = }")
         loss.backward()
         # Clip grad norms
         # torch.nn.utils.clip_grad_norm_(brdf_normal_model.parameters(), grad_norm_clip)
@@ -332,9 +326,16 @@ if __name__ == "__main__":
         writer.add_scalar("Train/grad_norm_1", total_norm.cpu(), step_num)
 
         if step_num % brdf_args.image_reporting_interval == 0:
+            # Report loss and other metrics
+            tqdm.write(f"========Step {step_num}:========")
+            tqdm.write(f"Camera Index: {camera_index}")
+            tqdm.write(f"{outgoing_radiance = }")
+            tqdm.write(f"{loss = }")
+
             # Add images for diffuse, specular, original, etc.
             # TODO: Could be a matplotlib figure
             # TODO: Add normal and spec_c images?
+
             writer.add_image(
                 f"camera_image", rgb_image.clip(0, 1), step_num, dataformats="HWC"
             )
@@ -389,6 +390,7 @@ if __name__ == "__main__":
                 step_num,
             )
 
+            # Plot incoming light at a random point for visualization
             if not brdf_args.randomly_sample_loss:
                 # Choose a random point and plot the incoming -> outgoing radiance
                 rand_row = int(torch.randint(global_image_height, (1,)).item())
