@@ -1,0 +1,5 @@
+# Use a prelim base image that's just built to only have ever code
+FROM obinnamdi/ever:v1.3_full_build
+
+# Replace all the ever_training code with exactly what we have in this directory to rebuild.
+COPY . /ever_training
