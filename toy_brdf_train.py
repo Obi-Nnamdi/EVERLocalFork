@@ -77,7 +77,6 @@ if __name__ == "__main__":
 
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
 
-
     # Set a global image width and height that is used for instanciating the neural network, etc.
     global_image_height: int = 50
     global_image_width: int = 50
@@ -157,23 +156,32 @@ if __name__ == "__main__":
         golden_diffuse_color,
         golden_specular_color,
         golden_specular_c,
-    ) # (P, 3)
+    )  # (P, 3)
     print(f"{rendered_colors = }")
 
     # Create model inputs
-    rendered_image_rgb = p_by_c_tensor_to_chw(rendered_colors, global_image_height, global_image_width) # (3, H, W)
-    rendered_image_depth = torch.ones((1, global_image_height, global_image_width)).cuda() # (1, H, W), Constant depth
+    rendered_image_rgb = p_by_c_tensor_to_chw(
+        rendered_colors, global_image_height, global_image_width
+    )  # (3, H, W)
+    rendered_image_depth = torch.ones(
+        (1, global_image_height, global_image_width)
+    ).cuda()  # (1, H, W), Constant depth
 
-    rendered_image = torch.cat((rendered_image_rgb, rendered_image_depth), dim=0) # (N, C, H, W)
+    rendered_image = torch.cat(
+        (rendered_image_rgb, rendered_image_depth), dim=0
+    )  # (N, C, H, W)
 
     # Save image using matplotlib for visualziation
-    plt.imsave(Path(model_params.model_path) / "toy_training_test_golden_image.png", rendered_image_rgb.permute(1, 2, 0).cpu().clip(0, 1))
+    plt.imsave(
+        Path(model_params.model_path) / "toy_training_test_golden_image.png",
+        rendered_image_rgb.permute(1, 2, 0).cpu().clip(0, 1),
+    )
 
     # Instanciate the BRDF_normal_predictor
     brdf_normal_model = BRDF_normal_predictor(global_image_height, global_image_width)
     brdf_normal_model = brdf_normal_model.cuda()
     brdf_normal_model.train()
-    
+
     # Training Config
     loss_fn = nn.MSELoss()
     color_penalty = 0.5
@@ -205,6 +213,8 @@ if __name__ == "__main__":
         spec_c = nchw_tensor_to_p_by_c(model_output["brdf"]["specular_c"]).squeeze(
             1
         )  # (P, )
+
+        # TODO: Think about ways to improve normal optimization.
         camera_normals_unnormed = nchw_tensor_to_p_by_c(
             model_output["normal"]
         )  # (P, 3)
@@ -236,7 +246,6 @@ if __name__ == "__main__":
         #     camera_normals_normed, rendering_cam
         # )
 
-
         # TODO: Add in a functional camera position?
         # camera_pos = rendering_cam.camera_center.cuda()  # (3,)
         # outgoing_directions = nn.functional.normalize(
@@ -247,7 +256,7 @@ if __name__ == "__main__":
             toy_incoming_light_color,
             toy_incoming_light_dirs,
             fake_outgoing_dirs,
-            camera_normals_normed, # TODO: Use toy world normals?
+            camera_normals_normed,  # TODO: Use toy world normals?
             Kd,
             Ks,
             spec_c,
@@ -264,6 +273,22 @@ if __name__ == "__main__":
             tqdm.write(f"{model_output = }")
             tqdm.write(f"{outgoing_radiance = }")
             tqdm.write(f"{loss = }")
+            printfn = tqdm.write
+            printfn(f"{camera_normals_unnormed = }")
+            printfn(f"{camera_normals_normed = }")
 
+    print("Final Results:")
+    print(f"{golden_specular_c - spec_c = }")
+    print(f"{golden_diffuse_color - Kd  = }")
+    print(f"{golden_specular_color - Ks  = }")
+    print(f"{golden_normals - camera_normals_normed  = }")
+
+    outgoing_radiance_image = p_by_c_tensor_to_chw(
+        outgoing_radiance, global_image_height, global_image_width
+    )  # (3, H, W)
+    plt.imsave(
+        Path(model_params.model_path) / "toy_training_test_output_image.png",
+        outgoing_radiance_image.permute(1, 2, 0).detach().cpu().clip(0, 1),
+    )
 
     # All done

@@ -274,7 +274,7 @@ class BRDF_normal_predictor(nn.Module):
 
         self.diffuse_brdf_size = 3
         self.spec_brdf_size = 4
-        self.normal_size = 3
+        self.normal_size = 2  # (x, y) components of tangent plane vector
         self.max_spec_c = 16
 
         # Layer Norm before output
@@ -293,7 +293,7 @@ class BRDF_normal_predictor(nn.Module):
         )
         self.brdf_activation_function = nn.Softplus(beta=10)  # matches EVER method.
         self.spec_c_activation_function = nn.Sigmoid()
-        self.normal_soft_cap = 2  # Soft capped from [-2, 2]
+        self.normal_soft_cap = 20  # Soft capped from [-20, 20]
 
         # TODO: support multiple types of BRDFs eventually?
 
@@ -357,10 +357,26 @@ class BRDF_normal_predictor(nn.Module):
                 "specular": specular_brdf_features,
                 "specular_c": specular_c_features,
             },
-            "normal": normal_features,
+            "normal": create_normals_from_tangent_space(
+                normal_features
+            ),  # TODO: don't do this automatically? Basically just adds an extra 1 dimension so it's not too bad though
         }
 
         return output_dict
+
+
+def create_normals_from_tangent_space(tangent_normals: torch.Tensor) -> torch.Tensor:
+    """
+    Inputs:
+        tangent_normals: (N, 2, [X, X...]) normal directions as (x, y) components in tangent space
+    Outputs:
+        normals: (N, 3, [X, X...]) normal directions
+    """
+    # https://learnopengl.com/Advanced-Lighting/Normal-Mapping
+    # Normals are always pointing towards (0, 0, 1) in camera space
+    z_normal_component = torch.ones_like(tangent_normals[:, :1])  # (N, 1)
+    unnormed_normals = torch.cat((tangent_normals, z_normal_component), dim=1)
+    return unnormed_normals
 
 
 def transform_normals_to_world_space(
