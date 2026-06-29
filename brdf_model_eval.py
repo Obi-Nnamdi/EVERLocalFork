@@ -102,7 +102,7 @@ if __name__ == "__main__":
     brdf_normal_model = brdf_normal_model.cuda()
 
     # Load model from checkpoint
-    model_checkpoint_path = Path(model_params.path_to_model)
+    model_checkpoint_path = Path(args.path_to_model)
     print(f"Loading checkpoint at {model_checkpoint_path.absolute()}")
 
     model_state_dict = torch.load(model_checkpoint_path)
@@ -180,9 +180,9 @@ if __name__ == "__main__":
 
     normal_image = convert_pytorch_image_to_matplotlib(
         model_output["normal"]
-    )  # (H, W, C)
+    ).cuda()  # (H, W, C)
 
-    camera_normals = nn.functional.normalize(model_output["normal"], dim=-1)
+    camera_normals = nn.functional.normalize(normal_image, dim=-1)
     camera_normals = camera_normals.reshape(-1, 3)
     world_normals = transform_normals_to_world_space(camera_normals, rendering_cam) # (N, 3)
     world_normal_colors = (world_normals / 2) + 0.5 # (-1, 1) -> (0, 1)
