@@ -32,6 +32,7 @@ from pathlib import Path
 import os
 
 from typing import cast
+from datetime import datetime
 
 from torch.utils.tensorboard.writer import SummaryWriter
 # Graphing
@@ -119,7 +120,10 @@ if __name__ == "__main__":
         Path(model_params.model_path) / model_checkpoint_dir / "brdf_model.pt"
     )
     os.makedirs(model_save_path.parent, exist_ok=True)
-    writer = SummaryWriter(log_dir=model_save_path.parent / "runs")
+
+    # Create filename-safe current date (ideally should be in system/local time)
+    curr_date_str = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
+    writer = SummaryWriter(log_dir=model_save_path.parent / "runs" / curr_date_str)
     print(f"Model Running Directory: {model_save_path.parent.absolute()}")
 
     # Set a global image width and height that is used for instanciating the neural network, etc.
@@ -241,6 +245,11 @@ if __name__ == "__main__":
             rand_points = torch.multinomial(
                 multinom_weights, brdf_args.point_batch_size, replacement=False
             )  # (P, )
+
+            # TODO: Replace with this code? (would have to time it)
+            # rand_points = torch.randperm(
+            #     global_image_height * global_image_width, device="cuda"
+            # )[: brdf_args.point_batch_size]
 
             # Select only those indices for all relevant tensors
             all_points_xyz = all_points_xyz[rand_points, :]
