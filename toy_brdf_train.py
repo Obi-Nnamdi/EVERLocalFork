@@ -106,6 +106,21 @@ if __name__ == "__main__":
     )
 
     # Generate fake incoming light data that we'll always use
+    constant_incoming_light = True
+    constant_spec_brdf = True
+    constant_spec_shininess = True
+    constant_diff_brdf = True
+    constant_normals = True
+
+    # Neater way to specify random toy tensors
+    def rand_n_by_3(const: bool, num_points: int):
+        if const:
+            random_tensor = torch.rand(1, 3).expand((num_points, -1)).contiguous()
+        else:
+            random_tensor = torch.rand(num_points, 3)
+
+        return random_tensor.cuda()
+
     toy_incoming_light_dirs = (
         test_sphere_d.unsqueeze(0)
         .expand(num_points, test_sphere_o.size(0), 3)
@@ -114,30 +129,32 @@ if __name__ == "__main__":
     )  # (P, N, 3)
 
     # TODO: Boring incoming light that is constant for every point for now
-    toy_incoming_light_color = (
-        torch.rand((1, test_sphere_o.size(0), 3))
-        .expand(num_points, -1, -1)
-        .contiguous()
-        .cuda()
-    )  # (P, N, 3)
-    # toy_incoming_light_color = torch.rand((num_points, test_sphere_o.size(0), 3)).cuda() # (P, N, 3)
+    if constant_incoming_light:
+        toy_incoming_light_color = (
+            torch.rand((1, test_sphere_o.size(0), 3))
+            .expand(num_points, -1, -1)
+            .contiguous()
+            .cuda()
+        )  # (P, N, 3)
+    else:
+        toy_incoming_light_color = torch.rand(
+            (num_points, test_sphere_o.size(0), 3)
+        ).cuda()  # (P, N, 3)
 
-    # Generate our fake "golden" BRDF data (boring constant image for now, torch.rand((num_points, 3)) later)
-    golden_diffuse_color = (
-        torch.rand((1, 3)).expand((num_points, -1)).contiguous().cuda()
-    )  #
-    golden_specular_color = (
-        torch.rand((1, 3)).expand((num_points, -1)).contiguous().cuda()
-    )  #
+    # Generate our fake "golden" BRDF data
+    golden_diffuse_color = rand_n_by_3(constant_diff_brdf, num_points)
+    golden_specular_color = rand_n_by_3(constant_spec_brdf, num_points)
 
     max_spec_c = 16
-    golden_specular_c = (
-        torch.rand((1,)).expand(num_points).contiguous().cuda() * max_spec_c
-    )  # (P,)
-    # golden_specular_c = torch.rand((num_points,)).cuda() * max_spec_c
+    if constant_spec_shininess:
+        golden_specular_c = (
+            torch.rand((1,)).expand(num_points).contiguous().cuda() * max_spec_c
+        )  # (P,)
+    else:
+        golden_specular_c = torch.rand((num_points,)).cuda() * max_spec_c
 
     golden_normals = nn.functional.normalize(
-        torch.rand((1, 3)).expand((num_points, -1)).contiguous().cuda(), dim=1
+        rand_n_by_3(constant_normals, num_points), dim=1
     )  # (P, 3)
 
     # Generate our rendered image to show to the model
@@ -270,7 +287,6 @@ if __name__ == "__main__":
         if step_num % brdf_args.image_reporting_interval == 0:
             # Report loss and other metrics
             tqdm.write(f"========Step {step_num}:========")
-            tqdm.write(f"{model_output = }")
             tqdm.write(f"{outgoing_radiance = }")
             tqdm.write(f"{loss = }")
             printfn = tqdm.write
@@ -290,5 +306,32 @@ if __name__ == "__main__":
         Path(model_params.model_path) / "toy_training_test_output_image.png",
         outgoing_radiance_image.permute(1, 2, 0).detach().cpu().clip(0, 1),
     )
+
+    # Plot two images and their L1 differences
+    figure = plt.figure(figsize=(9, 3), dpi=300)
+
+    ax = plt.subplot(1, 3, 1)
+    plt.title("Rendered Image")
+    ax.imshow(outgoing_radiance_image.permute(1, 2, 0).detach().cpu().clip(0, 1))
+
+    ax = plt.subplot(1, 3, 2)
+    plt.title("L2 Difference")
+    img = ax.imshow(
+        torch.norm(
+            outgoing_radiance_image - rendered_image_rgb, p=1, dim=0, keepdim=True
+        )
+        .permute(1, 2, 0)
+        .detach()
+        .cpu()
+        .clip(0, 1)
+    )
+    plt.colorbar(img, shrink=0.6)
+
+    ax = plt.subplot(1, 3, 3)
+    plt.title("Golden Image")
+    ax.imshow(rendered_image_rgb.permute(1, 2, 0).cpu().clip(0, 1))
+
+    plt.suptitle("Comparison of Golden vs Output Toy Image.")
+    plt.savefig(Path(model_params.model_path) / "toy_training_comparison_graph.png")
 
     # All done
