@@ -56,6 +56,7 @@ if __name__ == "__main__":
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default=None)
+    parser.add_argument("--path_to_model", "-p", required=True, type=str, default=None)
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     # args.checkpoint_iterations.append(args.iterations)
@@ -101,10 +102,7 @@ if __name__ == "__main__":
     brdf_normal_model = brdf_normal_model.cuda()
 
     # Load model from checkpoint
-    model_checkpoint_dir = "brdf_models"
-    model_checkpoint_path = (
-        Path(model_params.model_path) / model_checkpoint_dir / "brdf_model_1500.pt"
-    )
+    model_checkpoint_path = Path(model_params.path_to_model)
     print(f"Loading checkpoint at {model_checkpoint_path.absolute()}")
 
     model_state_dict = torch.load(model_checkpoint_path)
