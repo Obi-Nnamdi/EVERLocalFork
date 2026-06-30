@@ -183,14 +183,18 @@ if __name__ == "__main__":
     ).cuda()  # (H, W, C)
 
     camera_normals = nn.functional.normalize(normal_image, dim=-1)
+    camera_normal_colors = (camera_normals / 2) + 0.5  # (-1, 1) -> (0, 1)
+
+    # Calculate world normals (not displayed atm)
     camera_normals = camera_normals.reshape(-1, 3)
     world_normals = transform_normals_to_world_space(camera_normals, rendering_cam) # (N, 3)
     world_normal_colors = (world_normals / 2) + 0.5 # (-1, 1) -> (0, 1)
 
-    normal_image = world_normal_colors.reshape(
+    world_normal_colors = world_normal_colors.reshape(
         global_image_height, global_image_width, 3
     )
-    ax.imshow(normal_image.cpu())
+
+    ax.imshow(camera_normal_colors.cpu())
 
     # Save figure out
     plt.suptitle(f"Plots of Diffuse and Specular Maps for Camera {camera_index}")
