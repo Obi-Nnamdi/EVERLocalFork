@@ -206,8 +206,6 @@ if __name__ == "__main__":
         rendered_image = render_gaussians(
             ever_renderer, rendering_cam, None, include_depth=True
         )  # (C, H, W)
-        # TODO: Save the image output for debug purposes?
-        # print("Rendered Image.")
 
         # Separate RGB and Depth Images
         rgb_image = rendered_image[:3, :, :].permute(1, 2, 0)  # (H, W, C)
@@ -261,17 +259,6 @@ if __name__ == "__main__":
             spec_c = spec_c[rand_points]
             camera_normals_unnormed = camera_normals_unnormed[rand_points, :]
 
-        # Debug w/ fake values
-        # Kd = torch.full_like(Kd, 0.2)
-        # Ks = torch.full_like(Ks, 0.2)
-        # spec_c = torch.full_like(spec_c, 2.0)
-        # camera_normals_unnormed = torch.full_like(camera_normals_unnormed, 0.2)
-
-        # print(f"{Kd.shape  = }")
-        # print(f"{Ks.shape  = }")
-        # print(f"{spec_c.shape  = }")
-        # print(f"{camera_normals_unnormed.shape  = }")
-
         camera_normals_normed = nn.functional.normalize(camera_normals_unnormed, dim=1)
         world_normals = transform_normals_to_world_space(
             camera_normals_normed, rendering_cam
@@ -288,11 +275,6 @@ if __name__ == "__main__":
             fast=True,
             precompute_sh=False,
         )  # (P, N, 3)
-
-        # print(f"{incoming_light_dirs = }")
-        # print(f"{incoming_light_colors = }")
-        # print(f"{incoming_light_colors.shape = }")
-        # print(f"{incoming_light_dirs.shape = }")
 
         # BRDF reconstruction
         camera_pos = rendering_cam.camera_center.cuda()  # (3,)
@@ -341,10 +323,7 @@ if __name__ == "__main__":
             tqdm.write(f"Camera Index: {camera_index}")
             tqdm.write(f"{outgoing_radiance = }")
             tqdm.write(f"{loss = }")
-
-            # Add images for diffuse, specular, original, etc.
-            # TODO: Could be a matplotlib figure
-            # TODO: Add normal and spec_c images?
+            # TODO: Write down incoming light values?
 
             writer.add_image(
                 f"camera_image", rgb_image.clip(0, 1), step_num, dataformats="HWC"
