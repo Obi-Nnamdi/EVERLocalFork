@@ -349,6 +349,34 @@ if __name__ == "__main__":
             writer.add_image(
                 f"camera_image", rgb_image.clip(0, 1), step_num, dataformats="HWC"
             )
+            """
+            Show the reconstructed image (as much of it as we can)
+            """
+            if not brdf_args.randomly_sample_loss:
+                writer.add_image(
+                    f"reconstructed_camera_image",
+                    p_by_c_tensor_to_chw(
+                        outgoing_radiance, global_image_height, global_image_width
+                    ).clip(0, 1),
+                    step_num,
+                )
+            else:
+                # Create a neutral starter image and add the reconstructed colors that we've done the calculations for
+                starter_image = torch.full(
+                    (1, 3, global_image_height, global_image_width), 0.5, device="cuda"
+                )  # (N, C, H, W)
+                starter_image_unrolled = nchw_tensor_to_p_by_c(starter_image)
+                starter_image_unrolled[rand_points] = outgoing_radiance
+
+                starter_image = p_by_c_tensor_to_chw(
+                    starter_image_unrolled, global_image_height, global_image_width
+                )
+                writer.add_image(
+                    f"reconstructed_camera_image",
+                    starter_image.clip(0, 1),
+                    step_num,
+                )
+
             writer.add_image(
                 f"diffuse_output",
                 model_output["brdf"]["diffuse"][0].clip(0, 1),
