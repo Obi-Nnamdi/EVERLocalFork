@@ -20,6 +20,7 @@ from raytracing import (
     generate_spherical_rays,
     gather_incoming_light_at_points,
     plot_incoming_light_and_outgoing_radiance,
+    plot_outgoing_radiance_for_multiple_cameras,
 )
 from utils.general_utils import safe_state
 import sys
@@ -127,11 +128,11 @@ if __name__ == "__main__":
     print(f"Model Running Directory: {model_save_path.parent.absolute()}")
 
     # Set a global image width and height that is used for instanciating the neural network, etc.
-    global_image_height: int = (
-        rendering_cameras[0].image_height // brdf_args.preview_factor
+    global_image_height = cast(
+        int, rendering_cameras[0].image_height // brdf_args.preview_factor
     )
-    global_image_width: int = (
-        rendering_cameras[0].image_width // brdf_args.preview_factor
+    global_image_width = cast(
+        int, rendering_cameras[0].image_width // brdf_args.preview_factor
     )
 
     print(
@@ -441,8 +442,84 @@ if __name__ == "__main__":
             # ax.set_xlim(point_loc[0] - 200, point_loc[0] + 200)
             # ax.set_aspect("equal")
 
-            plt.savefig(model_save_path.parent.parent / "incoming_light_test.png")
+            # plt.savefig(model_save_path.parent.parent / "incoming_light_test.png")
             writer.add_figure("incoming_light_readout", fig, step_num)
+
+            ##################### OUTGOING RADIANCE PLOT #####################
+            # Plot outgoing BRDF for a single point by choosing a single BRDF value and varying camera angles
+            kd_value = Kd[point_index : point_index + 1]  # (1, 3)
+            ks_value = Ks[point_index : point_index + 1]  # (1, 3)
+            spec_c_value = spec_c[point_index : point_index + 1]  # (1,)
+            normal_value = world_normals[point_index : point_index + 1]  # (1, 3)
+            incoming_light_color_val = incoming_light_colors[
+                point_index : point_index + 1
+            ]  # (1, N, 3)
+            incoming_light_dir_val = incoming_light_dirs[
+                point_index : point_index + 1
+            ]  # (1, N, 3)
+
+            # Generate the rays we're going to query our BRDF with (spherical rays)
+            point_outgoing_dirs, _ = generate_spherical_rays(
+                torch.tensor([0.0, 0.0, 0.0]), incoming_light_sphere_divisions
+            )
+            point_outgoing_dirs = point_outgoing_dirs.cuda()  # (N, 3)
+
+            # Generate the rays we're going to query our BRDF with (camera rays)
+            camera_pos = rendering_cam.camera_center.cuda()  # (3,)
+            outgoing_directions = nn.functional.normalize(
+                (camera_pos - all_points_xyz), dim=1
+            )  # (P, 3)
+
+            all_camera_origins = torch.stack(
+                [cam.camera_center for cam in rendering_cameras], dim=0
+            ).cuda()  # (M, 3)
+            all_camera_dirs = all_camera_origins - all_points_xyz[point_index]  # (M, 3)
+            all_camera_dirs = nn.functional.normalize(all_camera_dirs, dim=1)  # (M, 3)
+
+            M = point_outgoing_dirs.size(
+                0
+            )  # How many rays are we querying BRDF for? This becomes the outer "P" dimension.
+            outgoing_radiance_colors = eval_blinn_phong_outgoing_radiance(
+                incoming_light_color_val.expand(M, -1, -1).contiguous(),
+                incoming_light_dir_val.expand(M, -1, -1).contiguous(),
+                point_outgoing_dirs,
+                normal_value.expand(M, -1).contiguous(),
+                kd_value.expand(M, -1).contiguous(),
+                ks_value.expand(M, -1).contiguous(),
+                spec_c_value.expand(
+                    M,
+                ).contiguous(),
+            )
+
+            # Plot the result
+            original_outgoing_radiance = outgoing_radiance[
+                point_index : point_index + 1
+            ]  # (1, 3)
+            original_outgoing_direction = outgoing_directions[
+                point_index : point_index + 1
+            ]  # (1, 3)
+
+            fig = plt.figure(dpi=300, figsize=(9, 3))
+            ax = fig.add_subplot(1, 2, 1, projection="3d")
+            plt.suptitle(
+                f"Outgoing Radiance for Camera {camera_index} at point {point_loc} (row, col)"
+            )
+            plot_outgoing_radiance_for_multiple_cameras(
+                outgoing_radiance_colors,
+                point_outgoing_dirs,
+                original_outgoing_radiance,
+                original_outgoing_direction,
+            )
+            # Show the point we used to generate the plot
+            ax = fig.add_subplot(1, 2, 2)
+            ax.imshow(rgb_image.cpu().clip(0, 1))
+            ax.plot(point_loc[1], point_loc[0], marker="x", color="r")
+
+            # TODO: Show other camera perspectives for comparison (i.e. +-1 camera indices)?
+
+            # plt.savefig(model_save_path.parent.parent / "outgoing_light_test.png")
+            writer.add_figure("outgoing_light_readout", fig, step_num)
+
             writer.flush()
 
         if step_num % brdf_args.checkpoint_interval == 0 and step_num != 0:

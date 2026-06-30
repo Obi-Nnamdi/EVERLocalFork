@@ -240,8 +240,8 @@ def generate_spherical_rays(
     Code adapted from https://matplotlib.org/stable/gallery/mplot3d/surface3d_2.html.
 
     Output:
-        rays_o: (N, 3)
         rays_d: (N, 3)
+        rays_o: (N, 3)
     """
 
     radius = 1
@@ -411,6 +411,61 @@ def plot_incoming_light_and_outgoing_radiance(
 
     # Put the outgoing radiance in the center and make it larger
     ax.scatter([0], [0], 0, c=outgoing_radiance, s=150)
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z")
+
+    return ax
+
+
+def plot_outgoing_radiance_for_multiple_cameras(
+    outgoing_radiance_colors: torch.Tensor,
+    outgoing_radiance_directions: torch.Tensor,
+    original_outgoing_radiance: torch.Tensor,
+    original_outgoing_dir: torch.Tensor,
+) -> Axes:
+    """
+    Plot outgoing radiance for a single point at a variety of angles, effectively plotting a BRDF.
+    Inputs:
+        outgoing_radiance_colors: (N, 3)
+        outgoing_radiance_directions: (N, 3)
+        original_outgoing_radiance: (1, 3)
+        outgoing_radiance_directions: (1, 3)
+    """
+    outgoing_radiance_directions = outgoing_radiance_directions.detach().cpu()
+    outgoing_radiance_colors = outgoing_radiance_colors.detach().cpu().clip(0, 1)
+    original_outgoing_dir = original_outgoing_dir.detach().cpu()
+    original_outgoing_radiance = original_outgoing_radiance.detach().cpu().clip(0, 1)
+
+    ax = plt.gca()
+    ax.scatter(
+        outgoing_radiance_directions[:, 0],
+        outgoing_radiance_directions[:, 1],
+        outgoing_radiance_directions[:, 2],
+        c=outgoing_radiance_colors,
+    )
+    ax.quiver3D(
+        [0],
+        [0],
+        [0],
+        original_outgoing_dir[:, 0],
+        original_outgoing_dir[:, 1],
+        original_outgoing_dir[:, 2],
+        color="g",
+        arrow_length_ratio=0.3,
+        linewidth=3,
+        label="Original Outgoing Direction",
+        alpha=1,
+    )
+
+    # Plot the original outgoing radiance and make it larger
+    ax.scatter(
+        *original_outgoing_dir.ravel().tolist(),
+        c=original_outgoing_radiance,
+        s=150,
+        marker="D",
+        edgecolors="black",
+    )
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
     ax.set_zlabel("Z")
