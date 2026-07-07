@@ -119,8 +119,8 @@ COPY . /ever_training
 
 RUN ls /opt/OptiX_7.4
 
-ENV TORCH_CUDA_ARCH_LIST="5.0;6.0;6.1;7.0;7.5;8.0;8.6"
-ENV CUDAARCHS="50 60 61 70 75 80 86"
+ENV TORCH_CUDA_ARCH_LIST="5.0;6.0;6.1;7.0;7.5;8.0;8.6;9.0"
+ENV CUDAARCHS="50 60 61 70 75 80 86 90"
 ENV LD_LIBRARY_PATH="/slang_install/lib/"
 
 WORKDIR /ever_training

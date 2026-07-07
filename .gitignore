@@ -18,6 +18,7 @@ usace/*
 **/.slangtorch_cache/*
 *.orig
 optix/*
+optix_*/*
 
 # Debugging things
 graphs

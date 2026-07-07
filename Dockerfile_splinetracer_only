@@ -1,9 +1,13 @@
 # Use a prelim base image that's just built to only have ever code
-FROM obinnamdi/ever:v1.1_prelim_base
+FROM obinnamdi/ever:v1.4_prelim_image
 
 # Copy ever code again to reflect code changes
 # chown flag is needed to prevent VSCode from breaking edit permissions
 COPY ever /ever_training/ever
+
+# Uncomment if you want to update the OptiX version:
+# RUN rm -rf /opt/OptiX_7.4
+# COPY optix_9/ /opt/OptiX_7.4
 
 RUN source activate ever && \
     rm -rf ever/build && \
