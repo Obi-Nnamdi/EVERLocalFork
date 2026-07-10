@@ -177,12 +177,19 @@ if __name__ == "__main__":
     # Now downsample our point cloud and get our incoming light for each of these points
     collapsed_point_cloud = full_scene_point_cloud.view(num_cameras * global_image_height * global_image_width, 3) # (N * H * W, 3)
 
-    # NOTE: Would likely be faster on CUDA but randperm operation kept on CPU to save VRAM
-    # Could also be done via a torch rand call and a topK. Multinom doesn't work (too many categories)
-    rand_points = torch.randperm(num_cameras * global_image_height * global_image_width)[: num_incoming_light_probe_points]
+    # NOTE: Could also be done via a torch rand call and a topK. Multinom doesn't work (too many categories)
+    try:
+        rand_points = torch.randperm(
+            num_cameras * global_image_height * global_image_width, device="cuda"
+        )[:num_incoming_light_probe_points].cpu()
+    except torch.OutOfMemoryError:
+        print(f"Downsampling on CPU....")
+        rand_points = torch.randperm(
+            num_cameras * global_image_height * global_image_width
+        )[:num_incoming_light_probe_points]
 
-    probe_point_xyz = collapsed_point_cloud[rand_points, :] # (P, 3)
-    
+    probe_point_xyz = collapsed_point_cloud[rand_points, :]  # (P, 3)
+
     # Get how close we are to each of the other points
     probe_point_xyz = probe_point_xyz.cuda()
     collapsed_point_cloud = collapsed_point_cloud.cuda()
@@ -252,7 +259,6 @@ if __name__ == "__main__":
     # print(f"{closest_points.shape =}")
 
     # incoming_light_probe_query_tensor = closest_points.cpu()
-
 
     # Save out all of our tensors
     print("Saving Tensors...")
