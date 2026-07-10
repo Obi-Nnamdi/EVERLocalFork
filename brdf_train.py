@@ -39,42 +39,15 @@ from torch.utils.tensorboard.writer import SummaryWriter
 # Graphing
 import matplotlib
 
+from utils.tensor_utils import (
+    nchw_tensor_to_p_by_c,
+    p_by_c_tensor_to_chw,
+    pretty_display_normal_tensor,
+)
+
 matplotlib.use("Agg")  # headless mode
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
-
-def nchw_tensor_to_p_by_c(input_tensor: torch.Tensor) -> torch.Tensor:
-    """
-    Converts a (N, C, H, W) tensor into a (P, C) tensor, assuming that N (first dim) is 1, and there a P = H * W points.
-    E.g. (1, 3, H, W) -> (H * W, 3)
-    E.g. (1, 1, H, W) -> (H * W, 1)
-    """
-    N, C, H, W = input_tensor.shape
-    input_tensor = input_tensor.squeeze(0)  # (C, H, W)
-    input_tensor = input_tensor.reshape(C, H * W)
-    input_tensor = input_tensor.T  # (H * W, C)
-
-    return input_tensor
-
-
-def p_by_c_tensor_to_chw(input_tensor: torch.Tensor, H: int, W: int) -> torch.Tensor:
-    """
-    Converts a (P, C) tensor into a (C, H, W) tensor, assuming that P was created by collapsing the (H,W) dimensions.
-    E.g. (H * W, 3) -> (1, 3, H, W)
-    """
-    P, C = input_tensor.shape
-    input_tensor = input_tensor.reshape(H, W, C)  # (H, W, C)
-    input_tensor = input_tensor.permute(2, 0, 1)  # (C, H, W)
-
-    return input_tensor
-
-
-def pretty_display_normal_tensor(normal_tensor: torch.Tensor) -> torch.Tensor:
-    """
-    Cleans up a normal tensor by mapping it from (-1, 1) -> (0, 1)
-    """
-    return (normal_tensor / 2) + 0.5
-
 
 if __name__ == "__main__":
     # Set up command line argument parser
@@ -148,9 +121,6 @@ if __name__ == "__main__":
     ever_renderer = build_gaussian_renderer(
         gaussians, rendering_cameras[0], cast(PipelineParams, pp.extract(args))
     )
-
-    # More constants (affecting how much incoming light we use)
-    incoming_light_sphere_divisions = 20
 
     # Calculate how big our incoming light features will be when input into our model.
     # test_sphere_o, _ = generate_spherical_rays(
@@ -270,7 +240,7 @@ if __name__ == "__main__":
             all_points_xyz,
             ever_renderer,
             tmin=incoming_light_tmin,
-            sphere_divisions=incoming_light_sphere_divisions,
+            sphere_divisions=brdf_args.incoming_light_divisions,
             # TODO: Experiment with changing these parameters if I get bad incoming light values.
             fast=True,
             precompute_sh=False,
@@ -467,7 +437,7 @@ if __name__ == "__main__":
 
             # Generate the rays we're going to query our BRDF with (spherical rays)
             point_outgoing_dirs, _ = generate_spherical_rays(
-                torch.tensor([0.0, 0.0, 0.0]), incoming_light_sphere_divisions
+                torch.tensor([0.0, 0.0, 0.0]), brdf_args.incoming_light_divisions
             )
             point_outgoing_dirs = point_outgoing_dirs.cuda()  # (N, 3)
 

@@ -9,7 +9,7 @@ from arguments import (
     BRDFOptmizationParams,
 )
 from argparse import ArgumentParser
-from brdf_train import nchw_tensor_to_p_by_c, p_by_c_tensor_to_chw
+from utils.tensor_utils import p_by_c_tensor_to_chw, nchw_tensor_to_p_by_c
 from neural_brdf import (
     BRDF_normal_predictor,
     transform_normals_to_world_space,
