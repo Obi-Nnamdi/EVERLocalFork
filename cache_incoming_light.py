@@ -49,6 +49,12 @@ if __name__ == "__main__":
     parser.add_argument("--detect_anomaly", action="store_true", default=False)
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--caching_batch_size", type=int, default=1000, help="The batch size to use when computing the mapping from the incoming light probe to all camera images.")
+    parser.add_argument(
+        "--num_probe_points",
+        type=int,
+        default=250_000,
+        help="The number of points to use to create a probe for the incoming light",
+    )
     args = parser.parse_args(sys.argv[1:])
     brdf_args = cast(
         BRDFOptmizationParams, brdf_optim_params.extract(args)
@@ -104,7 +110,9 @@ if __name__ == "__main__":
     #     num_cameras, global_image_height * global_image_width, incoming_light_size, 3, dtype=torch.float
     # )  # (N, P, R, 3)
 
-    num_incoming_light_probe_points = 50000 * 5  # (or H * W for consistency?)
+    num_incoming_light_probe_points = cast(
+        int, args.num_probe_points
+    )  # (or H * W for consistency?)
     incoming_light_probe_tensor = torch.zeros(
         num_incoming_light_probe_points, incoming_light_size, 3, dtype=torch.float
     )  # (P, R, 3)
@@ -117,7 +125,7 @@ if __name__ == "__main__":
         global_image_height,
         global_image_width,
         dtype=torch.int32,
-    )  # (N, 1, H, W)
+    )  # (N, 1, H, W), will get actually created later.
 
     # Not saved, but a giant point cloud (XYZ) of all of our points from all of our cameras.
     full_scene_point_cloud = torch.zeros(
@@ -213,12 +221,12 @@ if __name__ == "__main__":
         # Get the distances from each point to a probe point
         all_pair_distances = torch.norm(expanded_pc_batch - expanded_probe_batch, p=2, dim=-1) # (B, P)
 
-        # Get the closest points via max
-        values, indices = torch.max(all_pair_distances, dim=1) # Both tensors (B,)
+        # Get the closest points via min
+        values, indices = torch.min(all_pair_distances, dim=1)  # Both tensors (B,)
 
         # Build our result
         min_distances = torch.cat([min_distances, values])
-        indices = torch.cat([closest_points, indices])
+        closest_points = torch.cat([closest_points, indices])
 
     print(f"{torch.mean(min_distances) = }")
     print(f"{closest_points = }")
@@ -226,8 +234,6 @@ if __name__ == "__main__":
     # Our closest points tensor should now be reshaped back to its more-structured (N, H, W, 1) shape and then saved out
     closest_points = closest_points.view(num_cameras, global_image_height, global_image_width, 1)
     closest_points = closest_points.permute(0, 3, 1, 2) # (N, 1, H, W)
-
-    print(f"{closest_points.shape =}")
 
     incoming_light_probe_query_tensor = closest_points.cpu()
 
