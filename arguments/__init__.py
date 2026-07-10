@@ -14,10 +14,20 @@ import os
 from pathlib import Path
 import sys
 from argparse import ArgumentParser, Namespace
-
+from typing import Any
 
 class GroupParams:
     pass
+    def __getattr__(self, attr: str) -> Any:
+        """
+        Allows 'correct' indexing of parameters that start with underscores.
+        """
+        if attr.startswith("_"):
+            clipped_attr = attr[1:]
+            try:
+                return object.__getattribute__(self, clipped_attr)
+            except AttributeError:
+                raise AttributeError
 
 
 class ParamGroup:
@@ -173,6 +183,8 @@ class BRDFOptmizationParams(ParamGroup):
         self.image_reporting_interval = (
             250  # How often to save output model images to the tensorboard.
         )
+
+        self.incoming_light_divisions = 20  # How many sphere divisions should be used for calculating the incoming light
 
         # Have loss calculated only at randomly sampled points (specified by point_batch_size) to avoid high VRAM costs.
         self.randomly_sample_loss = False
