@@ -57,6 +57,12 @@ if __name__ == "__main__":
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--caching_batch_size", type=int, default=1000, help="The batch size to use when computing the mapping from the incoming light probe to all camera images.")
     parser.add_argument(
+        "--incoming_light_batch_size",
+        type=int,
+        default=200_000,
+        help="The batch size to use when computing incoming light for the incoming light probe.",
+    )
+    parser.add_argument(
         "--num_probe_points",
         type=int,
         default=250_000,
@@ -136,7 +142,7 @@ if __name__ == "__main__":
 
     # Not saved, but a giant point cloud (XYZ) of all of our points from all of our cameras.
     full_scene_point_cloud = torch.zeros(
-       num_cameras, global_image_height * global_image_width, 3, dtype=torch.float
+        num_cameras, global_image_height * global_image_width, 3, dtype=torch.float
     )  # (N, H * W, 3)
 
     num_channels = 4  # (R, G, B, D)
@@ -190,7 +196,9 @@ if __name__ == "__main__":
 
     print("Downsampling Point Cloud...")
     # Now downsample our point cloud and get our incoming light for each of these points
-    collapsed_point_cloud = full_scene_point_cloud.view(num_cameras * global_image_height * global_image_width, 3) # (N * H * W, 3)
+    collapsed_point_cloud = full_scene_point_cloud.view(
+        num_cameras * global_image_height * global_image_width, 3
+    )  # (N * H * W, 3)
 
     # NOTE: Could also be done via a torch rand call and a topK. Multinom doesn't work (too many categories)
     try:
@@ -209,26 +217,42 @@ if __name__ == "__main__":
     collapsed_point_cloud = collapsed_point_cloud.cuda()
 
     print("Generating Incoming Light Probe...")
-    incoming_light_colors, _, incoming_light_dirs = gather_incoming_light_at_points(
-        probe_point_xyz,
-        ever_renderer,
-        tmin=brdf_args.incoming_light_tmin,
-        sphere_divisions=brdf_args.incoming_light_divisions,
-        fast=True,
-        precompute_sh=False,
-    )  # (P, R, 3)
+    full_incoming_light_colors = torch.empty(
+        0,
+    ).cuda()
+
+    # Generate our incoming light in batches according to our batch size:
+    incoming_light_batch_size = cast(int, args.incoming_light_batch_size)
+    probe_point_batches = torch.split(probe_point_xyz, incoming_light_batch_size, dim=0)
+    incoming_light_dirs = None
+    for probe_batch in tqdm(probe_point_batches, total=len(probe_point_batches)):
+        incoming_light_colors, _, incoming_light_dirs = gather_incoming_light_at_points(
+            probe_point_xyz,
+            ever_renderer,
+            tmin=brdf_args.incoming_light_tmin,
+            sphere_divisions=brdf_args.incoming_light_divisions,
+            fast=True,
+            precompute_sh=False,
+        )  # (P, R, 3)
+        full_incoming_light_colors = torch.cat(
+            [full_incoming_light_colors, incoming_light_colors]
+        )
+
     incoming_light_probe_tensor = (
-        incoming_light_colors.cpu()
+        full_incoming_light_colors.cpu()
     )  # Copy back to CPU to get our probe tensor
 
+    assert incoming_light_dirs is not None
     incoming_light_probe_tensor_directions = incoming_light_dirs[
         0
     ].cpu()  # Constant for every single point, so no need to keep track of all of them and waste space
     print("Generating Probe Query Tensor...")
     # Get how close we are to each of the other points
     # Compute nearest neighbor for the point clouds a batch at a time to save memory.
-    batch_size = cast(int, args.caching_batch_size)
-    point_cloud_batches = torch.split(collapsed_point_cloud, batch_size, dim=0) # List of (batch_size, 3)
+    probe_query_batch_size = cast(int, args.caching_batch_size)
+    point_cloud_batches = torch.split(
+        collapsed_point_cloud, probe_query_batch_size, dim=0
+    )  # List of (batch_size, 3)
 
     min_distances = torch.empty(0,).cuda()
     closest_points = torch.empty(0,).cuda()
