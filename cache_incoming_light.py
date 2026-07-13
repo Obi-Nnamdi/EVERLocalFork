@@ -14,6 +14,7 @@ from raytracing import (
     generate_spherical_rays,
 )
 from utils.general_utils import safe_state
+from utils.tensor_utils import size_of_tensor_bytes
 import sys
 from tqdm import tqdm
 
@@ -22,16 +23,20 @@ import torch
 from pathlib import Path
 import os
 
-from typing import cast
-
+from typing import cast, TypedDict
 
 # Graphing
 import matplotlib
 
-from utils.tensor_utils import size_of_tensor_bytes
-
-
 matplotlib.use("Agg")  # headless mode
+
+
+# Class for the returned cache dictionary
+class BRDFCacheDict(TypedDict):
+    full_rendered_images: torch.Tensor
+    incoming_light_probe: torch.Tensor
+    incoming_light_probe_query: torch.Tensor
+
 
 if __name__ == "__main__":
     # Set up command line argument parser
@@ -228,6 +233,7 @@ if __name__ == "__main__":
         min_distances = torch.cat([min_distances, values])
         closest_points = torch.cat([closest_points, indices])
 
+    print("Incoming Light Probe Statistics:")
     print(f"{torch.mean(min_distances) = }")
     print(f"{closest_points = }")
 
@@ -237,51 +243,15 @@ if __name__ == "__main__":
 
     incoming_light_probe_query_tensor = closest_points.cpu()
 
-    # Alternate formulation:
+    # Save out all of our tensors into a dictionary.
+    cache_save_dict: BRDFCacheDict = {
+        "full_rendered_images": full_rendered_images_tensor,
+        "incoming_light_probe": incoming_light_probe_tensor,
+        "incoming_light_probe_query": incoming_light_probe_query_tensor,
+    }
 
-    # # Iteratively compute the nearest neighbor to each point to save memory
-    # probe_point_list = probe_point_xyz.split(1, dim=0) # List of (1, 3)
-    # # TODO: Could use batches of the collapsed_point_cloud tensor as well and use topKs
-    # min_distances = torch.full((collapsed_point_cloud.size(0),), float("inf"), dtype=torch.float).cuda() # Not a lot of data is needed here.
-    # closest_points = torch.zeros((collapsed_point_cloud.size(0),), dtype=torch.int32).cuda()
-
-    # for i, probe_point_batch in tqdm(enumerate(probe_point_list)):
-    #     # Get the closest points
-    #     distances = torch.norm(collapsed_point_cloud - probe_point_batch, p=2, dim=1)
-
-    #     # Store mask of where we've improved our distances and use that to update our definition of closest points
-    #     update_mask = distances < min_distances
-    #     min_distances.masked_scatter_(update_mask, distances) # in-place update our distances tensor
-
-    #     closest_points[update_mask] = i
-
-    # print(f"{torch.mean(min_distances) = }")
-    # print(f"{closest_points = }")
-
-    # # Our closest points tensor should now be reshaped back to its more-structured (N, H, W, 1) shape and then saved out
-    # closest_points = closest_points.view(num_cameras, global_image_height, global_image_width, 1)
-    # closest_points = closest_points.permute(0, 3, 1, 2) # (N, 1, H, W)
-
-    # print(f"{closest_points.shape =}")
-
-    # incoming_light_probe_query_tensor = closest_points.cpu()
-
-    # Save out all of our tensors
     print("Saving Tensors...")
     os.makedirs(cache_save_folder, exist_ok=True)
     print(f"Cache Dir: {cache_save_folder.absolute()}")
-    torch.save(
-        full_rendered_images_tensor,
-        cache_save_folder / "full_rendered_images_tensor.pt",
-    )
-    print(f"Saved full rendered images tensor.")
-    torch.save(
-        incoming_light_probe_tensor,
-        cache_save_folder / "incoming_light_probe_tensor.pt",
-    )
-    print(f"Saved incoming light probe tensor.")
-    torch.save(
-        incoming_light_probe_query_tensor,
-        cache_save_folder / "incoming_light_probe_query_tensor.pt",
-    )
-    print(f"Saved incoming light probe query tensor.")
+    torch.save(cache_save_dict, cache_save_folder / "full_cache_dict.pt")
+    print("Saved full cache dictionary.")
