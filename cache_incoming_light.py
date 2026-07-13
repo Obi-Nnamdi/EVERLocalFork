@@ -227,7 +227,7 @@ if __name__ == "__main__":
     incoming_light_dirs = None
     for probe_batch in tqdm(probe_point_batches, total=len(probe_point_batches)):
         incoming_light_colors, _, incoming_light_dirs = gather_incoming_light_at_points(
-            probe_point_xyz,
+            probe_batch,
             ever_renderer,
             tmin=brdf_args.incoming_light_tmin,
             sphere_divisions=brdf_args.incoming_light_divisions,
