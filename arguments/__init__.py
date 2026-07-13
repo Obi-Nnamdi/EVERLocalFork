@@ -178,6 +178,7 @@ class BRDFOptmizationParams(ParamGroup):
     def __init__(self, parser: ArgumentParser):
         self.training_steps = 500 * 20  # How many steps to train BRDF model for
         self.resume_from = ""  # Checkpoint file to resume BRDF training model from.
+        self.cache_location = ""  # Cache location for incoming light and camera renderings for faster training.
 
         self.checkpoint_interval = 250  # How often to save model checkpoints.
         self.image_reporting_interval = (
@@ -185,6 +186,9 @@ class BRDFOptmizationParams(ParamGroup):
         )
 
         self.incoming_light_divisions = 20  # How many sphere divisions should be used for calculating the incoming light
+        self.incoming_light_tmin = (
+            0.01  # tmin to use when rendering incoming light rays (including caching)
+        )
 
         # Have loss calculated only at randomly sampled points (specified by point_batch_size) to avoid high VRAM costs.
         self.randomly_sample_loss = False

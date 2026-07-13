@@ -12,6 +12,7 @@ from raytracing import (
     load_gaussian_model,
     render_gaussians,
     generate_spherical_rays,
+    gather_incoming_light_at_points,
 )
 from utils.general_utils import safe_state
 from utils.tensor_utils import size_of_tensor_bytes
@@ -33,9 +34,10 @@ matplotlib.use("Agg")  # headless mode
 
 # Class for the returned cache dictionary
 class BRDFCacheDict(TypedDict):
-    full_rendered_images: torch.Tensor
-    incoming_light_probe: torch.Tensor
-    incoming_light_probe_query: torch.Tensor
+    full_rendered_images: torch.Tensor  # (N, C, H, W)
+    incoming_light_probe_colors: torch.Tensor  # (P, R, 3)
+    incoming_light_probe_directions: torch.Tensor  # (R, 3)
+    incoming_light_probe_query: torch.Tensor  # (N, 1, H, W)
 
 
 if __name__ == "__main__":
@@ -203,12 +205,27 @@ if __name__ == "__main__":
 
     probe_point_xyz = collapsed_point_cloud[rand_points, :]  # (P, 3)
 
-    # Get how close we are to each of the other points
     probe_point_xyz = probe_point_xyz.cuda()
     collapsed_point_cloud = collapsed_point_cloud.cuda()
 
-    # probe_point_list = probe_point_xyz.split(1, dim=0) # List of (1, 3)
+    print("Generating Incoming Light Probe...")
+    incoming_light_colors, _, incoming_light_dirs = gather_incoming_light_at_points(
+        probe_point_xyz,
+        ever_renderer,
+        tmin=brdf_args.incoming_light_tmin,
+        sphere_divisions=brdf_args.incoming_light_divisions,
+        fast=True,
+        precompute_sh=False,
+    )  # (P, R, 3)
+    incoming_light_probe_tensor = (
+        incoming_light_colors.cpu()
+    )  # Copy back to CPU to get our probe tensor
 
+    incoming_light_probe_tensor_directions = incoming_light_dirs[
+        0
+    ].cpu()  # Constant for every single point, so no need to keep track of all of them and waste space
+    print("Generating Probe Query Tensor...")
+    # Get how close we are to each of the other points
     # Compute nearest neighbor for the point clouds a batch at a time to save memory.
     batch_size = cast(int, args.caching_batch_size)
     point_cloud_batches = torch.split(collapsed_point_cloud, batch_size, dim=0) # List of (batch_size, 3)
@@ -246,7 +263,8 @@ if __name__ == "__main__":
     # Save out all of our tensors into a dictionary.
     cache_save_dict: BRDFCacheDict = {
         "full_rendered_images": full_rendered_images_tensor,
-        "incoming_light_probe": incoming_light_probe_tensor,
+        "incoming_light_probe_colors": incoming_light_probe_tensor,
+        "incoming_light_probe_directions": incoming_light_probe_tensor_directions,
         "incoming_light_probe_query": incoming_light_probe_query_tensor,
     }
 
@@ -254,4 +272,4 @@ if __name__ == "__main__":
     os.makedirs(cache_save_folder, exist_ok=True)
     print(f"Cache Dir: {cache_save_folder.absolute()}")
     torch.save(cache_save_dict, cache_save_folder / "full_cache_dict.pt")
-    print("Saved full cache dictionary.")
+    print(f"Saved full cache dictionary at {cache_save_folder / 'full_cache_dict.pt'}")
