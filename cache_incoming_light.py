@@ -35,6 +35,7 @@ matplotlib.use("Agg")  # headless mode
 # Class for the returned cache dictionary
 class BRDFCacheDict(TypedDict):
     full_rendered_images: torch.Tensor  # (N, C, H, W)
+    full_scene_point_cloud: torch.Tensor  # (N, H * W, 3)
     incoming_light_probe_colors: torch.Tensor  # (P, R, 3)
     incoming_light_probe_directions: torch.Tensor  # (R, 3)
     incoming_light_probe_query: torch.Tensor  # (N, 1, H, W)
@@ -140,7 +141,7 @@ if __name__ == "__main__":
         dtype=torch.int32,
     )  # (N, 1, H, W), will get actually created later.
 
-    # Not saved, but a giant point cloud (XYZ) of all of our points from all of our cameras.
+    # A giant point cloud (XYZ) of all of our points from all of our cameras.
     full_scene_point_cloud = torch.zeros(
         num_cameras, global_image_height * global_image_width, 3, dtype=torch.float
     )  # (N, H * W, 3)
@@ -287,6 +288,7 @@ if __name__ == "__main__":
     # Save out all of our tensors into a dictionary.
     cache_save_dict: BRDFCacheDict = {
         "full_rendered_images": full_rendered_images_tensor,
+        "full_scene_point_cloud": full_scene_point_cloud,
         "incoming_light_probe_colors": incoming_light_probe_tensor,
         "incoming_light_probe_directions": incoming_light_probe_tensor_directions,
         "incoming_light_probe_query": incoming_light_probe_query_tensor,
