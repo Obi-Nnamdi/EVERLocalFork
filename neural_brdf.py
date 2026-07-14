@@ -49,7 +49,7 @@ class EvalBlinnPhongBRDF(Function):
         """
         Inputs:
             incoming_light: (P, N, 3) R,G,B values of incoming light for each direction
-            incoming_light_dirs: (P, N, 3) Directions oriented towards the light source in world space
+            incoming_light_dirs: (N, 3) Directions oriented towards the light source in world space
             normal: (P, 3) Surface normals in world space for each of P points
             outgoing_directions: (P, 3) Outgoing (view) direction of radiance, in world space (head at the camera, tip at the surface point) for each point.
             diffuse_K: (P, 3)
@@ -188,7 +188,7 @@ def eval_blinn_phong_outgoing_radiance(
 
     Inputs:
         incoming_light_colors: (P, N, 3) RGB values of incoming light for each direction
-        incoming_light_dirs: (P, N, 3) Normalized directions oriented towards the light source in world space
+        incoming_light_dirs: (N, 3) Normalized directions oriented towards the light source in world space
         normal: (P, 3) Surface normals in world space for each of P points
         outgoing_directions: (P, 3) Outgoing (view) normalized direction of radiance, in world space (head at the camera, tip at the surface point) for each point.
         diffuse_K: (P, 3) RGB values of diffuse coeffients (0 - 1 scale, but values can be greater or lower).
@@ -202,10 +202,11 @@ def eval_blinn_phong_outgoing_radiance(
     # Assertions for debugging.
     assert incoming_light_colors.dim() == 3
     assert incoming_light_colors.size(-1) == 3
+    P, N, _ = incoming_light_colors.shape
 
-    assert incoming_light_dirs.is_same_size(incoming_light_colors)
+    assert incoming_light_dirs.size(0) == N
+    assert incoming_light_dirs.size(1) == 3
 
-    P, N, _ = incoming_light_dirs.shape
     assert normals.size(-1) == 3
     assert normals.size(0) == P
     assert outgoing_directions.is_same_size(normals)
@@ -398,6 +399,30 @@ def transform_normals_to_world_space(
     # No scaling component of the camera to world matrix, can simply rotate the ray directions
     # without worrying about normal scaling issues
     world_normals = camera_normals @ camera_to_world_rot
+
+    return world_normals
+
+
+def batch_transform_normals_to_world_space(
+    camera_normals: torch.Tensor, cameras: list[MiniCam]
+) -> torch.Tensor:
+    """
+    Inputs:
+        camera_normals: (B, N, 3) normal directions in all of camera space, with the first dimension being len(cameras).
+        cameras: list of MiniCam objects representing the cameras.
+
+    Outputs:
+        world_normals: (B, N, 3) normal directions in world space
+    """
+    # Pulling code from "get_rays" in gaussian_renderer/ever.py.
+    camera_to_world_rot_list = [
+        camera.world_view_transform[:3, :3].T for camera in cameras
+    ]
+    camera_to_world_tensor = torch.stack(camera_to_world_rot_list, dim=0)  # (B, 3, 3)
+
+    # No scaling component of the camera to world matrix, can simply rotate the ray directions
+    # without worrying about normal scaling issues
+    world_normals = camera_normals.bmm(camera_to_world_tensor)
 
     return world_normals
 

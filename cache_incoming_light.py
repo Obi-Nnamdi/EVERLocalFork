@@ -256,7 +256,7 @@ if __name__ == "__main__":
     )  # List of (batch_size, 3)
 
     min_distances = torch.empty(0,).cuda()
-    closest_points = torch.empty(0,).cuda()
+    closest_points = torch.empty(0).cuda()
 
     P = probe_point_xyz.size(0)
     for i, pc_batch in tqdm(enumerate(point_cloud_batches), total=len(point_cloud_batches)):
@@ -283,7 +283,7 @@ if __name__ == "__main__":
     closest_points = closest_points.view(num_cameras, global_image_height, global_image_width, 1)
     closest_points = closest_points.permute(0, 3, 1, 2) # (N, 1, H, W)
 
-    incoming_light_probe_query_tensor = closest_points.cpu()
+    incoming_light_probe_query_tensor[:] = closest_points.cpu()
 
     # Save out all of our tensors into a dictionary.
     cache_save_dict: BRDFCacheDict = {

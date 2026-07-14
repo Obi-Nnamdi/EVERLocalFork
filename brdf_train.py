@@ -7,10 +7,16 @@ from arguments import (
 from argparse import ArgumentParser
 from neural_brdf import (
     BRDF_normal_predictor,
-    transform_normals_to_world_space,
+    batch_transform_normals_to_world_space,
     eval_blinn_phong_outgoing_radiance,
     FullModelOutput,
 )
+
+from batch_eval_blinn_phong_brdf import (
+    batch_eval_blinn_phong_outgoing_radiance_with_probe,
+    calc_optimal_batch_size_for_brdf_eval,
+)
+
 from raytracing import (
     build_gaussian_renderer,
     depth_map_to_xyz,
@@ -22,6 +28,7 @@ from raytracing import (
     plot_incoming_light_and_outgoing_radiance,
     plot_outgoing_radiance_for_multiple_cameras,
 )
+from cache_incoming_light import BRDFCacheDict
 from utils.general_utils import safe_state
 import sys
 from tqdm import tqdm
@@ -40,8 +47,8 @@ from torch.utils.tensorboard.writer import SummaryWriter
 import matplotlib
 
 from utils.tensor_utils import (
-    nchw_tensor_to_p_by_c,
-    p_by_c_tensor_to_chw,
+    nchw_tensor_to_npc,
+    npc_tensor_to_nchw,
     pretty_display_normal_tensor,
 )
 
@@ -73,25 +80,14 @@ if __name__ == "__main__":
 
     # Initialize system state (RNG)
     safe_state(args.quiet)
-
-    # Load Gaussians
     model_params: ModelParams = cast(ModelParams, lp.extract(args))
-
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    gaussians = load_gaussian_model(
-        model_params,
-        cast(OptimizationParams, op.extract(args)),
-        args.start_ever_checkpoint,
-    )
-    print(f"Loaded Gaussian, Active SH Degree: {gaussians.active_sh_degree}")
 
     rendering_cameras = get_cameras(model_params)
-    num_cameras = len(rendering_cameras)
-
     # Create our SummaryWriter for training logging
     model_checkpoint_dir = "brdf_models"
     model_save_path = (
-        Path(model_params.model_path) / model_checkpoint_dir / "brdf_model.pt"
+        Path(model_params._model_path) / model_checkpoint_dir / "brdf_model.pt"
     )
     os.makedirs(model_save_path.parent, exist_ok=True)
 
@@ -100,33 +96,65 @@ if __name__ == "__main__":
     writer = SummaryWriter(log_dir=model_save_path.parent / "runs" / curr_date_str)
     print(f"Model Running Directory: {model_save_path.parent.absolute()}")
 
-    # Set a global image width and height that is used for instanciating the neural network, etc.
-    global_image_height = cast(
-        int, rendering_cameras[0].image_height // brdf_args.preview_factor
+    # Load cache dir and tensors:
+    assert brdf_args.cache_location != ""
+    print(f"Loading cache from {brdf_args.cache_location}.")
+    cache_dict = cast(
+        BRDFCacheDict, torch.load(Path(brdf_args.cache_location), map_location="cuda")
     )
-    global_image_width = cast(
-        int, rendering_cameras[0].image_width // brdf_args.preview_factor
-    )
+
+    # Extract all tensors
+    rendered_images = cache_dict["full_rendered_images"]  # (N, 4, H, W)
+    full_scene_point_cloud = cache_dict["full_scene_point_cloud"]  # (N, H * W, 3)
+    probe_incoming_light_colors = cache_dict["incoming_light_probe_colors"]  # (P, R, 3)
+    probe_incoming_light_directions = cache_dict[
+        "incoming_light_probe_directions"
+    ]  # (R, 3)
+    incoming_light_query_mapping = cache_dict[
+        "incoming_light_probe_query"
+    ]  # (N, 1, H, W)
+
+    # Reshape query probe to be ready for putting into the slangtorch kernel
+    incoming_light_query_mapping = (
+        nchw_tensor_to_npc(incoming_light_query_mapping).squeeze(-1).contiguous()
+    )  # (N, HW)
+
+    # Use cache to get global image height and width:
+    global_image_height = rendered_images.size(2)
+    global_image_width = rendered_images.size(3)
 
     print(
-        f"Rendering images at a {global_image_width} x {global_image_height} resolution (W x H)."
+        f"Loaded Images are at {global_image_width} x {global_image_height} (w x h) resolution."
     )
 
-    if brdf_args.randomly_sample_loss:
-        print(
-            f"Sampling {brdf_args.point_batch_size} pixels per iteration for loss calculation."
-        )
+    # Handle creation of some early tensor operations we'll always use throughout training
+    camera_positions = torch.stack(
+        [camera.camera_center.cuda() for camera in rendering_cameras], dim=0
+    )  # (N, 3)
 
-    # Set up our initial renderer
-    ever_renderer = build_gaussian_renderer(
-        gaussians, rendering_cameras[0], cast(PipelineParams, pp.extract(args))
-    )
+    outgoing_directions = nn.functional.normalize(
+        (
+            camera_positions[:, None, :].expand(
+                -1, global_image_height * global_image_width, -1
+            )
+            - full_scene_point_cloud
+        ),
+        dim=-1,
+    )  # (N, H * W, 3)
 
-    # Calculate how big our incoming light features will be when input into our model.
-    # test_sphere_o, _ = generate_spherical_rays(
-    #     torch.zeros((3,)), incoming_light_sphere_divisions
-    # )
-    # incoming_light_size = test_sphere_o.size(0) * 3  # N vectors that have [r, g, b]
+    # Extract the RGB colors for each point from the rendered images
+    rendered_colors = nchw_tensor_to_npc(rendered_images[:, :3])  # (N, HW, 3)
+
+    # Min-max normalize the depth in log space
+    rendered_images[:, 3] = torch.log(rendered_images[:, 3])
+    assert not torch.any(rendered_images.isinf())  # Ensure we have no bad values
+
+    max_depth_val = torch.max(rendered_images[:, 3])
+    min_depth_val = torch.min(rendered_images[:, 3])
+
+    # [0 - 1 Normalization]
+    rendered_images[:, 3] -= min_depth_val
+    rendered_images[:, 3] /= max_depth_val - min_depth_val
 
     # Instanciate the BRDF_normal_predictor
     brdf_normal_model = BRDF_normal_predictor(global_image_height, global_image_width)
@@ -145,7 +173,6 @@ if __name__ == "__main__":
     color_penalty = 0.5
 
     lr = 0.001
-    grad_norm_clip = 1
     optimizer = torch.optim.AdamW(
         brdf_normal_model.parameters(),
         lr=lr,
@@ -162,105 +189,37 @@ if __name__ == "__main__":
         optimizer.zero_grad()
         torch.cuda.empty_cache()
 
-        # Random Camera index and chosen point
-        camera_index = int(torch.randint(num_cameras, (1,)).item())
-
-        # Set up the camera we're rendering with
-        # TODO: Can just render all images from all cameras once, right?
-        rendering_cam = rendering_cameras[camera_index]
-        # print(f"{global_image_width = }")
-        # print(f"{global_image_height = }")
-        rendering_cam.image_width = global_image_width
-        rendering_cam.image_height = global_image_height
-
-        rendered_image = render_gaussians(
-            ever_renderer, rendering_cam, None, include_depth=True
-        )  # (C, H, W)
-
-        # Separate RGB and Depth Images
-        rgb_image = rendered_image[:3, :, :].permute(1, 2, 0)  # (H, W, C)
-        rendered_colors = rgb_image.reshape(-1, 3)  # (P, 3)
-
-        depth_map = rendered_image[3, :, :]  # (H, W)
-
-        # Make our xyz_map for each pixel
-        rays_o, rays_d = ever_renderer.get_rays(rendering_cam)
-        xyz_map = depth_map_to_xyz(rays_o, rays_d, depth_map)  # (H, W, 3)
-        all_points_xyz = xyz_map.reshape(-1, 3)  # (H * W, 3)
-
         # Ask for our BRDF values
-        model_output = cast(
-            FullModelOutput, brdf_normal_model(rendered_image.unsqueeze(0))
-        )
+        model_output = cast(FullModelOutput, brdf_normal_model(rendered_images))
         # print(f"{model_output = }")
 
         # Collect Model Outputs
-        Kd = nchw_tensor_to_p_by_c(model_output["brdf"]["diffuse"])  # (P, 3)
-        Ks = nchw_tensor_to_p_by_c(model_output["brdf"]["specular"])  # (P, 3)
-        spec_c = nchw_tensor_to_p_by_c(model_output["brdf"]["specular_c"]).squeeze(
-            1
-        )  # (P, )
-        camera_normals_unnormed = nchw_tensor_to_p_by_c(
+        Kd = nchw_tensor_to_npc(model_output["brdf"]["diffuse"])  # (N, H * W, 3)
+        Ks = nchw_tensor_to_npc(model_output["brdf"]["specular"])  # (N, H * W, 3)
+        spec_c = nchw_tensor_to_npc(model_output["brdf"]["specular_c"]).squeeze(
+            -1
+        )  # (N, H * W, )
+        camera_normals_unnormed = nchw_tensor_to_npc(
             model_output["normal"]
-        )  # (P, 3)
-
-        # Select only random points if we're sampling:
-        rand_points = None
-        if brdf_args.randomly_sample_loss:
-            # uniformly choose a few points at a time to calculate loss with on low VRAM configs.
-            multinom_weights = torch.ones(
-                (global_image_height * global_image_width,)
-            ).cuda()
-            rand_points = torch.multinomial(
-                multinom_weights, brdf_args.point_batch_size, replacement=False
-            )  # (P, )
-
-            # TODO: Replace with this code? (would have to time it)
-            # rand_points = torch.randperm(
-            #     global_image_height * global_image_width, device="cuda"
-            # )[: brdf_args.point_batch_size]
-
-            # Select only those indices for all relevant tensors
-            all_points_xyz = all_points_xyz[rand_points, :]
-            rendered_colors = rendered_colors[rand_points, :]
-
-            Kd = Kd[rand_points, :]
-            Ks = Ks[rand_points, :]
-            spec_c = spec_c[rand_points]
-            camera_normals_unnormed = camera_normals_unnormed[rand_points, :]
-
-        camera_normals_normed = nn.functional.normalize(camera_normals_unnormed, dim=1)
-        world_normals = transform_normals_to_world_space(
-            camera_normals_normed, rendering_cam
-        )
-
-        # Querying Spherical Directions
-        incoming_light_tmin = 0.01
-        incoming_light_colors, _, incoming_light_dirs = gather_incoming_light_at_points(
-            all_points_xyz,
-            ever_renderer,
-            tmin=incoming_light_tmin,
-            sphere_divisions=brdf_args.incoming_light_divisions,
-            # TODO: Experiment with changing these parameters if I get bad incoming light values.
-            fast=True,
-            precompute_sh=False,
-        )  # (P, N, 3)
+        )  # (N, H * W, 3)
 
         # BRDF reconstruction
-        camera_pos = rendering_cam.camera_center.cuda()  # (3,)
-        outgoing_directions = nn.functional.normalize(
-            (camera_pos - all_points_xyz), dim=1
-        )  # (P, 3)
+        camera_normals_normed = nn.functional.normalize(camera_normals_unnormed, dim=1)
+        world_normals = batch_transform_normals_to_world_space(
+            camera_normals_normed, rendering_cameras
+        )  # (N, H * W, 3)
 
-        outgoing_radiance = eval_blinn_phong_outgoing_radiance(
-            incoming_light_colors,
-            incoming_light_dirs,
+        outgoing_radiance = batch_eval_blinn_phong_outgoing_radiance_with_probe(
+            probe_incoming_light_colors,
+            probe_incoming_light_directions,
+            incoming_light_query_mapping,
             outgoing_directions,
             world_normals,
-            Kd,
             Ks,
+            Kd,
             spec_c,
-        )  # (P, 3)
+            None,  # TODO: Determine a constant sub_batch_size (12 is around okay)
+        )  # (B, HW, 3)
 
         # TODO: How to handle "color penalty"? Maybe penalize each of the maps from getting too far away from the main rendered color idk.
         # loss = (
@@ -277,7 +236,11 @@ if __name__ == "__main__":
         parameters = brdf_normal_model.conv1.parameters()
         norm_type = 2
         total_norm = torch.norm(
-            torch.stack([torch.norm(p.grad.detach(), norm_type) for p in parameters]),
+            torch.stack(
+                [
+                    torch.norm(p.grad.detach(), norm_type) for p in parameters
+                ]  # pyright: ignore[reportOptionalMemberAccess]
+            ),
             norm_type,
         )
 
@@ -288,152 +251,134 @@ if __name__ == "__main__":
         writer.add_scalar("Train/grad_norm_1", total_norm.cpu(), step_num)
 
         if step_num % brdf_args.image_reporting_interval == 0:
+            image_reporting_batch_size = 4  # (batch dimension for showing our images)
             # Report loss and other metrics
             tqdm.write(f"========Step {step_num}:========")
-            tqdm.write(f"Camera Index: {camera_index}")
             tqdm.write(f"{outgoing_radiance = }")
             tqdm.write(f"{loss = }")
             # TODO: Write down incoming light values?
 
-            writer.add_image(
-                f"camera_image", rgb_image.clip(0, 1), step_num, dataformats="HWC"
+            writer.add_images(
+                f"camera_rgb_images",
+                rendered_images[:image_reporting_batch_size, :3].clip(0, 1),
+                step_num,
+                dataformats="NCHW",
+            )
+            writer.add_images(
+                f"camera_depth_images",
+                rendered_images[:image_reporting_batch_size, 3:4].clip(0, 1),
+                step_num,
+                dataformats="NCHW",
             )
             """
-            Show the reconstructed image (as much of it as we can)
+            Show the reconstructed images
             """
-            if not brdf_args.randomly_sample_loss:
-                writer.add_image(
-                    f"reconstructed_camera_image",
-                    p_by_c_tensor_to_chw(
-                        outgoing_radiance, global_image_height, global_image_width
-                    ).clip(0, 1),
-                    step_num,
-                )
-            else:
-                # Create a neutral starter image and add the reconstructed colors that we've done the calculations for
-                starter_image = torch.full(
-                    (1, 3, global_image_height, global_image_width), 0.5, device="cuda"
-                )  # (N, C, H, W)
-                starter_image_unrolled = nchw_tensor_to_p_by_c(starter_image)
-                starter_image_unrolled[rand_points] = outgoing_radiance
+            writer.add_images(
+                f"reconstructed_camera_images",
+                npc_tensor_to_nchw(
+                    outgoing_radiance[:image_reporting_batch_size],
+                    global_image_height,
+                    global_image_width,
+                ).clip(0, 1),
+                step_num,
+            )
 
-                starter_image = p_by_c_tensor_to_chw(
-                    starter_image_unrolled, global_image_height, global_image_width
-                )
-                writer.add_image(
-                    f"reconstructed_camera_image",
-                    starter_image.clip(0, 1),
-                    step_num,
-                )
-
-            writer.add_image(
+            writer.add_images(
                 f"diffuse_output",
-                model_output["brdf"]["diffuse"][0].clip(0, 1),
+                model_output["brdf"]["diffuse"][:image_reporting_batch_size].clip(0, 1),
                 step_num,
             )
-            writer.add_image(
+            writer.add_images(
                 f"specular_output",
-                model_output["brdf"]["specular"][0].clip(0, 1),
+                model_output["brdf"]["specular"][:image_reporting_batch_size].clip(
+                    0, 1
+                ),
                 step_num,
             )
-            writer.add_image(
+            writer.add_images(
                 f"specular_c_mapped_0_1",
-                model_output["brdf"]["specular_c"][0] / brdf_normal_model.max_spec_c,
+                model_output["brdf"]["specular_c"][:image_reporting_batch_size]
+                / brdf_normal_model.max_spec_c,
                 step_num,
             )
 
-            if brdf_args.randomly_sample_loss:
-                # Recalculate world normals since they may be subsampled.
-                # TODO: Handle this better, as it takes additional VRAM.
-                full_cam_normals = nchw_tensor_to_p_by_c(
-                    model_output["normal"]
-                )  # (X, 3)
-                full_cam_normals = nn.functional.normalize(
-                    full_cam_normals, dim=1
-                )  # (X, 3)
-                full_world_normals = transform_normals_to_world_space(
-                    full_cam_normals, rendering_cam
-                )  # (X, 3)
-            else:
-                full_cam_normals = camera_normals_normed
-                full_world_normals = world_normals
-
-            writer.add_image(
+            writer.add_images(
                 f"camera_normal",
                 pretty_display_normal_tensor(
-                    p_by_c_tensor_to_chw(
-                        full_cam_normals, global_image_height, global_image_width
+                    npc_tensor_to_nchw(
+                        camera_normals_normed[:image_reporting_batch_size], global_image_height, global_image_width
                     )
                 ),
                 step_num,
             )
-            writer.add_image(
+            writer.add_images(
                 f"world_normal",
                 pretty_display_normal_tensor(
-                    p_by_c_tensor_to_chw(
-                        full_world_normals, global_image_height, global_image_width
+                    npc_tensor_to_nchw(
+                        world_normals[:image_reporting_batch_size], global_image_height, global_image_width
                     )
                 ),
                 step_num,
             )
 
             # Plot incoming light at a random point for visualization
-            if not brdf_args.randomly_sample_loss:
-                # Choose a random point and plot the incoming -> outgoing radiance
-                rand_row = int(torch.randint(global_image_height, (1,)).item())
-                rand_col = int(torch.randint(global_image_width, (1,)).item())
-                point_loc = (rand_row, rand_col)
+            # Choose a random point and plot the incoming -> outgoing radiance
+            rand_camera_index = int(
+                torch.randint(outgoing_radiance.size(0), (1,)).item()
+            )
+            rand_row = int(torch.randint(global_image_height, (1,)).item())
+            rand_col = int(torch.randint(global_image_width, (1,)).item())
+            point_loc = (rand_row, rand_col)
 
-                point_index = (
-                    point_loc[0] * global_image_width + point_loc[1]
-                )  # Row-major order`
-            else:
-                # Use an index of the "rand_points" array instead (we've downsampled our output)
-                assert rand_points is not None
-                point_index = int(torch.randint(rand_points.size(0), (1,)).item())
-
-                # Recalculate the true location in the image it's from.
-                actual_point = int(rand_points[point_index].item())
-                img_row = actual_point // global_image_width
-                img_col = actual_point % global_image_width
-                point_loc = (img_row, img_col)
+            point_index = (
+                point_loc[0] * global_image_width + point_loc[1]
+            )  # Row-major order`
 
             fig = plt.figure(dpi=300, figsize=(9, 3))
 
             ax = fig.add_subplot(1, 2, 1, projection="3d")
             plt.suptitle(
-                f"Incoming Light for Camera {camera_index} at point {point_loc} (row, col)"
+                f"Incoming Light for Camera {rand_camera_index} at point {point_loc} (row, col)"
             )
 
+            # Get the point's associated incoming light
+            incoming_light_probe_point_index = incoming_light_query_mapping[
+                rand_camera_index, point_index
+            ]
+            point_incoming_light_color = probe_incoming_light_colors[
+                incoming_light_probe_point_index
+            ]
+            cam_matplotlib_image = rendered_images[rand_camera_index, :3].permute(
+                1, 2, 0
+            )  # (H, W, 3)
+
             plot_incoming_light_and_outgoing_radiance(
-                incoming_light_colors[point_index],
-                incoming_light_dirs[point_index],
-                outgoing_radiance[point_index : point_index + 1],
-                outgoing_directions[point_index : point_index + 1],
+                point_incoming_light_color,
+                probe_incoming_light_directions,
+                outgoing_radiance[rand_camera_index, point_index : point_index + 1],
+                outgoing_directions[rand_camera_index, point_index : point_index + 1],
             )
 
             # Show the point we used to generate the plot
             ax = fig.add_subplot(1, 2, 2)
-            ax.imshow(rgb_image.cpu().clip(0, 1))
+            ax.imshow(cam_matplotlib_image.cpu().clip(0, 1))
             ax.plot(point_loc[1], point_loc[0], marker="x", color="r")
             # ax.set_xlim(point_loc[0] - 200, point_loc[0] + 200)
             # ax.set_aspect("equal")
 
-            # plt.savefig(model_save_path.parent.parent / "incoming_light_test.png")
             writer.add_figure("incoming_light_readout", fig, step_num)
 
             ##################### OUTGOING RADIANCE PLOT #####################
             # Plot outgoing BRDF for a single point by choosing a single BRDF value and varying camera angles
-            kd_value = Kd[point_index : point_index + 1]  # (1, 3)
-            ks_value = Ks[point_index : point_index + 1]  # (1, 3)
-            spec_c_value = spec_c[point_index : point_index + 1]  # (1,)
-            normal_value = world_normals[point_index : point_index + 1]  # (1, 3)
-            incoming_light_color_val = incoming_light_colors[
-                point_index : point_index + 1
-            ]  # (1, N, 3)
-            incoming_light_dir_val = incoming_light_dirs[
-                point_index : point_index + 1
-            ]  # (1, N, 3)
+            kd_value = Kd[rand_camera_index, point_index : point_index + 1]  # (1, 3)
+            ks_value = Ks[rand_camera_index, point_index : point_index + 1]  # (1, 3)
+            spec_c_value = spec_c[
+                rand_camera_index, point_index : point_index + 1
+            ]  # (1,)
+            normal_value = world_normals[
+                rand_camera_index, point_index : point_index + 1
+            ]  # (1, 3)
+            incoming_light_color_val = point_incoming_light_color[None, :]  # (1, N, 3)
 
             # Generate the rays we're going to query our BRDF with (spherical rays)
             point_outgoing_dirs, _ = generate_spherical_rays(
@@ -441,24 +386,12 @@ if __name__ == "__main__":
             )
             point_outgoing_dirs = point_outgoing_dirs.cuda()  # (N, 3)
 
-            # Generate the rays we're going to query our BRDF with (camera rays)
-            camera_pos = rendering_cam.camera_center.cuda()  # (3,)
-            outgoing_directions = nn.functional.normalize(
-                (camera_pos - all_points_xyz), dim=1
-            )  # (P, 3)
-
-            all_camera_origins = torch.stack(
-                [cam.camera_center for cam in rendering_cameras], dim=0
-            ).cuda()  # (M, 3)
-            all_camera_dirs = all_camera_origins - all_points_xyz[point_index]  # (M, 3)
-            all_camera_dirs = nn.functional.normalize(all_camera_dirs, dim=1)  # (M, 3)
-
             M = point_outgoing_dirs.size(
                 0
             )  # How many rays are we querying BRDF for? This becomes the outer "P" dimension.
             outgoing_radiance_colors = eval_blinn_phong_outgoing_radiance(
                 incoming_light_color_val.expand(M, -1, -1).contiguous(),
-                incoming_light_dir_val.expand(M, -1, -1).contiguous(),
+                probe_incoming_light_directions,
                 point_outgoing_dirs,
                 normal_value.expand(M, -1).contiguous(),
                 kd_value.expand(M, -1).contiguous(),
@@ -470,16 +403,16 @@ if __name__ == "__main__":
 
             # Plot the result
             original_outgoing_radiance = outgoing_radiance[
-                point_index : point_index + 1
+                rand_camera_index, point_index : point_index + 1
             ]  # (1, 3)
             original_outgoing_direction = outgoing_directions[
-                point_index : point_index + 1
+                rand_camera_index, point_index : point_index + 1
             ]  # (1, 3)
 
             fig = plt.figure(dpi=300, figsize=(9, 3))
             ax = fig.add_subplot(1, 2, 1, projection="3d")
             plt.suptitle(
-                f"Outgoing Radiance for Camera {camera_index} at point {point_loc} (row, col)"
+                f"Outgoing Radiance for Camera {rand_camera_index} at point {point_loc} (row, col)"
             )
             plot_outgoing_radiance_for_multiple_cameras(
                 outgoing_radiance_colors,
@@ -489,12 +422,10 @@ if __name__ == "__main__":
             )
             # Show the point we used to generate the plot
             ax = fig.add_subplot(1, 2, 2)
-            ax.imshow(rgb_image.cpu().clip(0, 1))
+            ax.imshow(cam_matplotlib_image.cpu().clip(0, 1))
             ax.plot(point_loc[1], point_loc[0], marker="x", color="r")
 
             # TODO: Show other camera perspectives for comparison (i.e. +-1 camera indices)?
-
-            # plt.savefig(model_save_path.parent.parent / "outgoing_light_test.png")
             writer.add_figure("outgoing_light_readout", fig, step_num)
 
             writer.flush()

@@ -9,7 +9,7 @@ from arguments import (
     BRDFOptmizationParams,
 )
 from argparse import ArgumentParser
-from utils.tensor_utils import p_by_c_tensor_to_chw, nchw_tensor_to_p_by_c
+from utils.tensor_utils import p_by_c_tensor_to_chw, unsqueezed_chw_tensor_to_p_by_c
 from neural_brdf import (
     BRDF_normal_predictor,
     transform_normals_to_world_space,
@@ -225,14 +225,16 @@ if __name__ == "__main__":
         # print(f"{model_output = }")
 
         # Collect Model Outputs
-        Kd = nchw_tensor_to_p_by_c(model_output["brdf"]["diffuse"])  # (P, 3)
-        Ks = nchw_tensor_to_p_by_c(model_output["brdf"]["specular"])  # (P, 3)
-        spec_c = nchw_tensor_to_p_by_c(model_output["brdf"]["specular_c"]).squeeze(
+        Kd = unsqueezed_chw_tensor_to_p_by_c(model_output["brdf"]["diffuse"])  # (P, 3)
+        Ks = unsqueezed_chw_tensor_to_p_by_c(model_output["brdf"]["specular"])  # (P, 3)
+        spec_c = unsqueezed_chw_tensor_to_p_by_c(
+            model_output["brdf"]["specular_c"]
+        ).squeeze(
             1
         )  # (P, )
 
         # TODO: Think about ways to improve normal optimization.
-        camera_normals_unnormed = nchw_tensor_to_p_by_c(
+        camera_normals_unnormed = unsqueezed_chw_tensor_to_p_by_c(
             model_output["normal"]
         )  # (P, 3)
 
