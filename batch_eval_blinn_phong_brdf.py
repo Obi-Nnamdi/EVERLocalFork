@@ -73,14 +73,6 @@ class BatchEvalBlinnPhongBRDF(Function):
         block_size_x = 64  # Point / HW dim
         block_size_y = 2  # Batch dim
         block_size_z = 8  # light dim
-        gridSize = (
-            BatchEvalBlinnPhongBRDF.calc_grid_size(normals.shape[1], block_size_x),
-            BatchEvalBlinnPhongBRDF.calc_grid_size(normals.shape[0], block_size_y),
-            BatchEvalBlinnPhongBRDF.calc_grid_size(
-                probe_incoming_light.shape[1], block_size_z
-            ),
-        )
-        print(f"{gridSize = }")
         brdf_eval_kernel.launchRaw(
             blockSize=(block_size_x, block_size_y, block_size_z),
             gridSize=(
