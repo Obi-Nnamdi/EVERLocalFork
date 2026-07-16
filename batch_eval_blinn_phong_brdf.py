@@ -212,8 +212,7 @@ def batch_eval_blinn_phong_outgoing_radiance_with_probe(
     if sub_batch_size is None:
         sub_batch_size = calc_optimal_batch_size_for_brdf_eval(N, HW)
 
-
-    all_colors = torch.zeros((B, HW, 3), dtype=torch.float, device="cuda")
+    all_colors = torch.empty((B, HW, 3), dtype=torch.float, device="cuda")
     for i in range(0, B, sub_batch_size):
         # (SB, HW, N, 3) R,G,B values of lighting contributions at each of HW points for all of the N directions
         outgoing_radiance: torch.Tensor = BatchEvalBlinnPhongBRDF.apply(

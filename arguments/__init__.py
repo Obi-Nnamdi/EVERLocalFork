@@ -183,9 +183,11 @@ class BRDFOptmizationParams(ParamGroup):
         self.resume_from = ""  # Checkpoint file to resume BRDF training model from.
         self.cache_location = ""  # Cache location for incoming light and camera renderings for faster training.
 
-        self.checkpoint_interval = 250  # How often to save model checkpoints.
+        self.checkpoint_interval = (
+            250  # How often to save model checkpoints (in steps).
+        )
         self.image_reporting_interval = (
-            250  # How often to save output model images to the tensorboard.
+            250  # How often to save output model images to the tensorboard (in steps).
         )
 
         self.incoming_light_divisions = 20  # How many sphere divisions should be used for calculating the incoming light
@@ -202,7 +204,7 @@ class BRDFOptmizationParams(ParamGroup):
 
         # (Used when caching)
         self.cache_evaluation_batch_size = (
-            16  # Batch size to use for camera evaluation.
+            16  # Batch size to use for training the model with the cache.
         )
 
         super().__init__(parser, "BRDF Optimization Parameters")

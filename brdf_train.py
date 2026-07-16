@@ -261,6 +261,12 @@ if __name__ == "__main__":
         default=None,
         help="Checkpoint to resume ever model from.",
     )
+    parser.add_argument(
+        "--tensorboard_log_comment",
+        type=str,
+        default=None,
+        help="Additional string to append to the tensorboard log_dir",
+    )
     parser.add_argument("--detect_anomaly", action="store_true", default=False)
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(sys.argv[1:])
@@ -283,7 +289,12 @@ if __name__ == "__main__":
 
     # Create filename-safe current date (ideally should be in system/local time)
     curr_date_str = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
-    tensorboard_log_dir = model_save_path.parent / "runs" / curr_date_str
+    log_folder_name = (
+        curr_date_str
+        if args.tensorboard_log_comment is None
+        else curr_date_str + "_" + args.tensorboard_log_comment
+    )
+    tensorboard_log_dir = model_save_path.parent / "runs" / log_folder_name
     writer = SummaryWriter(log_dir=tensorboard_log_dir)
     print(f"Tensorboard Logs Saved to {tensorboard_log_dir.absolute()}")
 
@@ -332,6 +343,7 @@ if __name__ == "__main__":
         ),
         dim=-1,
     )  # (N, H * W, 3)
+    del full_scene_point_cloud  # not needed anymore
 
     cameras_to_world_rotation = get_stacked_camera_to_world_rotation_tensor(
         rendering_cameras
