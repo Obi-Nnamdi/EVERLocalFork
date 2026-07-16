@@ -11,6 +11,7 @@ kernels = slangtorch.loadModule(
     str(Path(__file__).parent / "ever/splinetracers/slang/brdf_eval.slang")
 )
 
+MAX_NUMEL_FOR_SLANGTORCH = 4294967295 // 2  # close to INT32 overflow
 
 class BatchEvalBlinnPhongBRDF(Function):
     """
@@ -47,6 +48,10 @@ class BatchEvalBlinnPhongBRDF(Function):
         _, N, _ = probe_incoming_light.shape
         output = torch.full((B, HW, N, 3), float("nan"), device="cuda") # using nan to take advantage of torch.nanmean
 
+        # TODO: Tracing an error where having a batch size that's bigger or around this value can cause errors because the tensor can't be populated
+        # (uint saturation?)
+        assert output.numel() < MAX_NUMEL_FOR_SLANGTORCH
+
         brdf_eval_kernel = (
             kernels.eval_outgoing_radiance_blinn_phong_with_incoming_light_cache(
                 probe_incoming_light=probe_incoming_light,
@@ -64,14 +69,23 @@ class BatchEvalBlinnPhongBRDF(Function):
         # Max thread count is 1024 (32^2), higher values raise an error.
         # TODO: Worth exploring block size x-y tradeoffs? I.e. 64/16 vs 32/32.
         # https://forums.developer.nvidia.com/t/what-is-the-maximum-number-of-blocks-i-can-use/201587
-        block_size_x = 2  # Batch dim
-        block_size_y = 64  # Point / HW dim
+        # Note that because of thread block limitations, the batch and point dimensions are swapped here:  https://forums.developer.nvidia.com/t/maximum-block-per-grid/246841
+        block_size_x = 64  # Point / HW dim
+        block_size_y = 2  # Batch dim
         block_size_z = 8  # light dim
+        gridSize = (
+            BatchEvalBlinnPhongBRDF.calc_grid_size(normals.shape[1], block_size_x),
+            BatchEvalBlinnPhongBRDF.calc_grid_size(normals.shape[0], block_size_y),
+            BatchEvalBlinnPhongBRDF.calc_grid_size(
+                probe_incoming_light.shape[1], block_size_z
+            ),
+        )
+        print(f"{gridSize = }")
         brdf_eval_kernel.launchRaw(
             blockSize=(block_size_x, block_size_y, block_size_z),
             gridSize=(
-                BatchEvalBlinnPhongBRDF.calc_grid_size(normals.shape[0], block_size_x),
-                BatchEvalBlinnPhongBRDF.calc_grid_size(normals.shape[1], block_size_y),
+                BatchEvalBlinnPhongBRDF.calc_grid_size(normals.shape[1], block_size_x),
+                BatchEvalBlinnPhongBRDF.calc_grid_size(normals.shape[0], block_size_y),
                 BatchEvalBlinnPhongBRDF.calc_grid_size(
                     probe_incoming_light.shape[1], block_size_z
                 ),
@@ -130,14 +144,14 @@ class BatchEvalBlinnPhongBRDF(Function):
             )
         )
 
-        block_size_x = 2  # Batch dim
-        block_size_y = 64  # Point / HW dim
+        block_size_x = 64  # Point / HW dim
+        block_size_y = 2  # Batch dim
         block_size_z = 8  # light dim
         brdf_eval_kernel_bwd.launchRaw(
             blockSize=(block_size_x, block_size_y, block_size_z),
             gridSize=(
-                BatchEvalBlinnPhongBRDF.calc_grid_size(normals.shape[0], block_size_x),
-                BatchEvalBlinnPhongBRDF.calc_grid_size(normals.shape[1], block_size_y),
+                BatchEvalBlinnPhongBRDF.calc_grid_size(normals.shape[1], block_size_x),
+                BatchEvalBlinnPhongBRDF.calc_grid_size(normals.shape[0], block_size_y),
                 BatchEvalBlinnPhongBRDF.calc_grid_size(
                     probe_incoming_light.shape[1], block_size_z
                 ),
@@ -234,6 +248,11 @@ def batch_eval_blinn_phong_outgoing_radiance_with_probe(
 
 def calc_optimal_batch_size_for_brdf_eval(ray_dim: int, point_dim: int):
     torch.cuda.synchronize()
+
+    # TODO: This is purely empirical, should really look further into this.
+    # The maximum batch size we can have before slangtorch will straight-up refuse to evaluate to output the result due to indexing saturation.
+    max_batch_size = MAX_NUMEL_FOR_SLANGTORCH // (ray_dim * point_dim * 3)
+
     free_vram, _ = torch.cuda.mem_get_info()
 
     # How much memory would a 1 batch size (1, HW, N, 3) tensor take up? Then we can see how big our batch size can be.
@@ -243,4 +262,4 @@ def calc_optimal_batch_size_for_brdf_eval(ray_dim: int, point_dim: int):
         non_batched_mem * 4
     )  # Multiply non-batched mem to allow for overhead
     assert sub_batch_size > 0
-    return sub_batch_size
+    return min(sub_batch_size, max_batch_size)
