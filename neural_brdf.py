@@ -404,27 +404,39 @@ def transform_normals_to_world_space(
 
 
 def batch_transform_normals_to_world_space(
-    camera_normals: torch.Tensor, cameras: list[MiniCam]
+    camera_normals: torch.Tensor, cameras_to_world_tensor: torch.Tensor
 ) -> torch.Tensor:
     """
     Inputs:
         camera_normals: (B, N, 3) normal directions in all of camera space, with the first dimension being len(cameras).
-        cameras: list of MiniCam objects representing the cameras.
+        camera_to_world_tensor: (B, 3, 3) stacked tensor giving the C2W rotation transformation from camera space to world space.
 
     Outputs:
         world_normals: (B, N, 3) normal directions in world space
     """
-    # Pulling code from "get_rays" in gaussian_renderer/ever.py.
-    camera_to_world_rot_list = [
-        camera.world_view_transform[:3, :3].T for camera in cameras
-    ]
-    camera_to_world_tensor = torch.stack(camera_to_world_rot_list, dim=0)  # (B, 3, 3)
 
     # No scaling component of the camera to world matrix, can simply rotate the ray directions
     # without worrying about normal scaling issues
-    world_normals = camera_normals.bmm(camera_to_world_tensor)
+    world_normals = camera_normals.bmm(cameras_to_world_tensor)
 
     return world_normals
+
+
+def get_stacked_camera_to_world_rotation_tensor(cameras: list[MiniCam]) -> torch.Tensor:
+    """
+    Get the camera to world rotation tensors stacked across the first dimension for a list of cameras.
+    Inputs:
+        cameras: list of B MiniCam objects representing the cameras.
+
+    Outputs:
+        cameras_to_world_tensor: (B, 3, 3) stacked tensor giving the C2W rotation transformation from camera space to world space.
+    """
+    camera_to_world_rot_list = [
+        camera.world_view_transform[:3, :3].T for camera in cameras
+    ]
+    cameras_to_world_tensor = torch.stack(camera_to_world_rot_list, dim=0)  # (B, 3, 3)
+
+    return cameras_to_world_tensor
 
 
 def test_normal_transformation(view: MiniCam, rays_d: torch.Tensor):

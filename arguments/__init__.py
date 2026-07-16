@@ -176,7 +176,10 @@ class BRDFOptmizationParams(ParamGroup):
     """
 
     def __init__(self, parser: ArgumentParser):
-        self.training_steps = 500 * 20  # How many steps to train BRDF model for
+        self.training_steps = (
+            500 * 20
+        )  # How many steps to train BRDF model for (no cache)
+        self.training_epochs = 200  # How many epochs to train BRDF model for (cache)
         self.resume_from = ""  # Checkpoint file to resume BRDF training model from.
         self.cache_location = ""  # Cache location for incoming light and camera renderings for faster training.
 
@@ -190,12 +193,18 @@ class BRDFOptmizationParams(ParamGroup):
             0.01  # tmin to use when rendering incoming light rays (including caching)
         )
 
-        # Have loss calculated only at randomly sampled points (specified by point_batch_size) to avoid high VRAM costs.
+        # How far to downsample the original resolution that the dataset cameras were rendered at.
+        self.preview_factor = 4
+
+        # (Used when not caching) Have loss calculated only at randomly sampled points (specified by point_batch_size) to avoid high VRAM costs.
         self.randomly_sample_loss = False
         self.point_batch_size = 2048 * 12
 
-        # How far to downsample the original resolution that the dataset cameras were rendered at.
-        self.preview_factor = 4
+        # (Used when caching)
+        self.cache_evaluation_batch_size = (
+            16  # Batch size to use for camera evaluation.
+        )
+
         super().__init__(parser, "BRDF Optimization Parameters")
 
     def extract(self, args):
