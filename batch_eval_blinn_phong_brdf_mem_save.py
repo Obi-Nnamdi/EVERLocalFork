@@ -8,11 +8,16 @@ from pathlib import Path
 import slangtorch
 
 # Constants
-MAX_INCOMING_LIGHT_DIRECTIONS_FOR_LOOP_EVAL = 200 # How many incoming light directions are we using at maximum?
+MAX_INCOMING_LIGHT_DIRECTIONS_FOR_LOOP_EVAL = (
+    400  # How many incoming light directions are we using at maximum?
+)
 MAX_NUMEL_FOR_SLANGTORCH = 4294967295 // 2  # close to INT32 overflow
 
 kernels = slangtorch.loadModule(
-    str(Path(__file__).parent / "ever/splinetracers/slang/brdf_eval.slang"), defines={"MAX_INCOMING_LIGHT_DIRECTIONS_FOR_LOOP_EVAL": MAX_INCOMING_LIGHT_DIRECTIONS_FOR_LOOP_EVAL}
+    str(Path(__file__).parent / "ever/splinetracers/slang/brdf_eval.slang"),
+    defines={
+        "MAX_INCOMING_LIGHT_DIRECTIONS_FOR_LOOP_EVAL": MAX_INCOMING_LIGHT_DIRECTIONS_FOR_LOOP_EVAL
+    },
 )
 
 
@@ -49,24 +54,24 @@ class BatchEvalBlinnPhongBRDFMemSave(Function):
         """
         B, HW, _ = normals.shape
         _, N, _ = probe_incoming_light.shape
-        output = torch.zeros((B, HW, 3), device="cuda", dtype=torch.float) # using nan to take advantage of torch.nanmean
+        output = torch.zeros(
+            (B, HW, 3), device="cuda", dtype=torch.float
+        )  # using nan to take advantage of torch.nanmean
 
         # TODO: Tracing an error where having a batch size that's bigger or around this value can cause errors because the tensor can't be populated
         # (uint saturation?)
         assert output.numel() < MAX_NUMEL_FOR_SLANGTORCH
 
-        brdf_eval_kernel = (
-            kernels.eval_outgoing_radiance_blinn_phong_with_incoming_light_cache_mem_save(
-                probe_incoming_light=probe_incoming_light,
-                probe_incoming_light_dirs=probe_incoming_light_dirs,
-                incoming_light_probe_query=incoming_light_probe_query,
-                outgoing_directions=outgoing_directions,
-                normals=normals,
-                diffuse_K=diffuse_K,
-                specular_K=specular_K,
-                spec_reflect_c=spec_reflect_c,
-                output=output,
-            )
+        brdf_eval_kernel = kernels.eval_outgoing_radiance_blinn_phong_with_incoming_light_cache_mem_save(
+            probe_incoming_light=probe_incoming_light,
+            probe_incoming_light_dirs=probe_incoming_light_dirs,
+            incoming_light_probe_query=incoming_light_probe_query,
+            outgoing_directions=outgoing_directions,
+            normals=normals,
+            diffuse_K=diffuse_K,
+            specular_K=specular_K,
+            spec_reflect_c=spec_reflect_c,
+            output=output,
         )
 
         # Max thread count is 1024 (32^2), higher values raise an error.
@@ -75,12 +80,16 @@ class BatchEvalBlinnPhongBRDFMemSave(Function):
         # Note that because of thread block limitations, the batch and point dimensions are swapped here:  https://forums.developer.nvidia.com/t/maximum-block-per-grid/246841
         block_size_x = 256  # Point / HW dim
         block_size_y = 4  # Batch dim
-        block_size_z = 1 # No light dim
+        block_size_z = 1  # No light dim
         brdf_eval_kernel.launchRaw(
             blockSize=(block_size_x, block_size_y, block_size_z),
             gridSize=(
-                BatchEvalBlinnPhongBRDFMemSave.calc_grid_size(normals.shape[1], block_size_x),
-                BatchEvalBlinnPhongBRDFMemSave.calc_grid_size(normals.shape[0], block_size_y),
+                BatchEvalBlinnPhongBRDFMemSave.calc_grid_size(
+                    normals.shape[1], block_size_x
+                ),
+                BatchEvalBlinnPhongBRDFMemSave.calc_grid_size(
+                    normals.shape[0], block_size_y
+                ),
                 1,
             ),
         )
@@ -123,29 +132,31 @@ class BatchEvalBlinnPhongBRDFMemSave(Function):
         spec_reflect_c_grad = torch.zeros_like(spec_reflect_c)
 
         # Create backwards kernel and run it
-        brdf_eval_kernel_bwd = (
-            kernels.eval_outgoing_radiance_blinn_phong_with_incoming_light_cache_mem_save.bwd(
-                probe_incoming_light=probe_incoming_light,
-                probe_incoming_light_dirs=probe_incoming_light_dirs,
-                incoming_light_probe_query=incoming_light_probe_query,
-                outgoing_directions=outgoing_directions,
-                normals=(normals, normals_grad),
-                diffuse_K=(diffuse_K, diffuse_K_grad),
-                specular_K=(specular_K, specular_K_grad),
-                spec_reflect_c=(spec_reflect_c, spec_reflect_c_grad),
-                output=(output, grad_output),
-            )
+        brdf_eval_kernel_bwd = kernels.eval_outgoing_radiance_blinn_phong_with_incoming_light_cache_mem_save.bwd(
+            probe_incoming_light=probe_incoming_light,
+            probe_incoming_light_dirs=probe_incoming_light_dirs,
+            incoming_light_probe_query=incoming_light_probe_query,
+            outgoing_directions=outgoing_directions,
+            normals=(normals, normals_grad),
+            diffuse_K=(diffuse_K, diffuse_K_grad),
+            specular_K=(specular_K, specular_K_grad),
+            spec_reflect_c=(spec_reflect_c, spec_reflect_c_grad),
+            output=(output, grad_output),
         )
 
         block_size_x = 256  # Point / HW dim
         block_size_y = 4  # Batch dim
-        block_size_z = 1 # No light dim
+        block_size_z = 1  # No light dim
         brdf_eval_kernel_bwd.launchRaw(
             blockSize=(block_size_x, block_size_y, block_size_z),
             gridSize=(
-                BatchEvalBlinnPhongBRDFMemSave.calc_grid_size(normals.shape[1], block_size_x),
-                BatchEvalBlinnPhongBRDFMemSave.calc_grid_size(normals.shape[0], block_size_y),
-                1
+                BatchEvalBlinnPhongBRDFMemSave.calc_grid_size(
+                    normals.shape[1], block_size_x
+                ),
+                BatchEvalBlinnPhongBRDFMemSave.calc_grid_size(
+                    normals.shape[0], block_size_y
+                ),
+                1,
             ),
         )
 
@@ -174,7 +185,6 @@ def batch_eval_blinn_phong_outgoing_radiance_with_probe_mem_save(
     diffuse_K: torch.Tensor,
     specular_K: torch.Tensor,
     spec_reflect_c: torch.Tensor,
-    sub_batch_size: Optional[int] = None,
 ):
     """
     Evaluate the given Blinn-Phong BRDFs (specified with diffuse, specular, and specular_c coeffs) with the given incoming light probe,
@@ -217,43 +227,13 @@ def batch_eval_blinn_phong_outgoing_radiance_with_probe_mem_save(
     assert spec_reflect_c.dim() == 2
     assert spec_reflect_c.size(0) == B
 
-    if sub_batch_size is None:
-        sub_batch_size = calc_optimal_batch_size_for_brdf_eval(N, HW)
-        print(f"{sub_batch_size = }")
-
-    all_colors = torch.empty((B, HW, 3), dtype=torch.float, device="cuda")
-    for i in range(0, B, sub_batch_size):
-        # (SB, HW, 3) R,G,B values of lighting contributions at each of HW points for all of the N directions
-        outgoing_colors: torch.Tensor = BatchEvalBlinnPhongBRDFMemSave.apply(
-            probe_incoming_light_colors,
-            probe_incoming_light_dirs,
-            incoming_light_probe_query[i : i + sub_batch_size],
-            outgoing_directions[i : i + sub_batch_size],
-            normals[i : i + sub_batch_size],
-            diffuse_K[i : i + sub_batch_size],
-            specular_K[i : i + sub_batch_size],
-            spec_reflect_c[i : i + sub_batch_size],
-        )  # pyright: ignore[reportAssignmentType]
-
-        all_colors[i: i + sub_batch_size] = outgoing_colors # (SB, HW, 3)
-
-    return all_colors
-
-
-def calc_optimal_batch_size_for_brdf_eval(ray_dim: int, point_dim: int):
-    torch.cuda.synchronize()
-
-    # TODO: This is purely empirical, should really look further into this.
-    # The maximum batch size we can have before slangtorch will straight-up refuse to evaluate to output the result due to indexing saturation.
-    max_batch_size = MAX_NUMEL_FOR_SLANGTORCH // (point_dim * 3)
-
-    free_vram, _ = torch.cuda.mem_get_info()
-
-    # How much memory would a 1 batch size (1, HW, 3) tensor take up? Then we can see how big our batch size can be.
-    non_batched_mem = point_dim * 3 * torch.float32.itemsize
-
-    sub_batch_size = free_vram // (
-        non_batched_mem * 4
-    )  # Multiply non-batched mem to allow for overhead
-    assert sub_batch_size > 0
-    return min(sub_batch_size, max_batch_size)
+    return BatchEvalBlinnPhongBRDFMemSave.apply(
+        probe_incoming_light_colors,
+        probe_incoming_light_dirs,
+        incoming_light_probe_query,
+        outgoing_directions,
+        normals,
+        diffuse_K,
+        specular_K,
+        spec_reflect_c,
+    )

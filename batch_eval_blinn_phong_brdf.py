@@ -14,6 +14,7 @@ MAX_NUMEL_FOR_SLANGTORCH = 4294967295 // 2  # close to INT32 overflow
 class BatchEvalBlinnPhongBRDF(Function):
     """
     Evaluate the given Blinn-Phong BRDFs with the given incoming light, matching each point to its corresponding incoming light.
+    Returns radiance results for all lighting directions (large memory overhead). Currently unused.
     """
 
     @staticmethod
