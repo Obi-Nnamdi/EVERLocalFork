@@ -26,7 +26,10 @@ from pathlib import Path
 import slangtorch
 
 kernels = slangtorch.loadModule(
-    str(Path(__file__).parent / "ever/splinetracers/slang/brdf_eval.slang")
+    str(Path(__file__).parent / "ever/splinetracers/slang/brdf_eval.slang"),
+    defines={
+        "MAX_INCOMING_LIGHT_DIRECTIONS_FOR_LOOP_EVAL": 10
+    },  # Shouldn't be calling the big batch kernel using this version of the module
 )
 
 

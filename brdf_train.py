@@ -13,6 +13,11 @@ from neural_brdf import (
     FullModelOutput,
 )
 
+from batch_eval_blinn_phong_brdf_mem_save import (
+    batch_eval_blinn_phong_outgoing_radiance_with_probe_mem_save,
+    calc_optimal_batch_size_for_brdf_eval,
+)
+
 from batch_eval_blinn_phong_brdf import (
     batch_eval_blinn_phong_outgoing_radiance_with_probe,
     calc_optimal_batch_size_for_brdf_eval,
@@ -39,6 +44,7 @@ from torch import nn
 
 from pathlib import Path
 import os
+import time
 
 from typing import cast
 from datetime import datetime
@@ -53,6 +59,7 @@ from utils.tensor_utils import (
     nchw_tensor_to_npc,
     npc_tensor_to_nchw,
     pretty_display_normal_tensor,
+    full_print_tensor,
 )
 
 matplotlib.use("Agg")  # headless mode
@@ -328,6 +335,9 @@ if __name__ == "__main__":
     print(
         f"Loaded Images are at {global_image_width} x {global_image_height} (w x h) resolution."
     )
+    print(
+        f"Number of incoming light directions: {probe_incoming_light_directions.size(0)}"
+    )
 
     # Handle creation of some early tensor operations we'll always use throughout training
     camera_positions = torch.stack(
@@ -440,17 +450,39 @@ if __name__ == "__main__":
                 camera_normals_normed, camera_to_world_transform_batch
             )  # (N, H * W, 3)
 
-            outgoing_radiance = batch_eval_blinn_phong_outgoing_radiance_with_probe(
-                probe_incoming_light_colors,
-                probe_incoming_light_directions,
-                query_batch,
-                outgoing_dir_batch,
-                world_normals,
-                Ks,
-                Kd,
-                spec_c,
-                None,  # TODO: Determine a constant sub_batch_size
+            start_time = time.process_time()
+            outgoing_radiance = (
+                batch_eval_blinn_phong_outgoing_radiance_with_probe_mem_save(
+                    probe_incoming_light_colors,
+                    probe_incoming_light_directions,
+                    query_batch,
+                    outgoing_dir_batch,
+                    world_normals,
+                    Ks,
+                    Kd,
+                    spec_c,
+                    None,  # TODO: Determine a constant sub_batch_size
+                )
             )  # (B, HW, 3)
+            print(f"Mem-Save BRDF Eval took {time.process_time() - start_time}s")
+
+            start_time = time.process_time()
+            outgoing_radiance_non_mem = (
+                batch_eval_blinn_phong_outgoing_radiance_with_probe(
+                    probe_incoming_light_colors,
+                    probe_incoming_light_directions,
+                    query_batch,
+                    outgoing_dir_batch,
+                    world_normals,
+                    Ks,
+                    Kd,
+                    spec_c,
+                    None,  # TODO: Determine a constant sub_batch_size
+                )
+            )  # (B, HW, 3)
+            print(
+                f"Non Mem-Save BRDF Eval took {time.process_time() - start_time:.6f}s"
+            )
 
             # TODO: How to handle "color penalty"? Maybe penalize each of the maps from getting too far away from the main rendered color idk.
             # loss = (
@@ -464,6 +496,9 @@ if __name__ == "__main__":
             )  # (B, HW, 3)
 
             loss = loss_fn(outgoing_radiance, rendered_color_batch)
+            loss_non_mem = loss_fn(outgoing_radiance_non_mem, rendered_color_batch)
+            print(f"{loss = }")
+            print(f"{loss_non_mem = }")
             loss.backward()
 
             # Check gradient norms

@@ -64,3 +64,9 @@ def size_of_tensor_bytes(tensor: torch.Tensor):
     https://discuss.pytorch.org/t/how-to-know-the-memory-allocated-for-a-tensor-on-gpu/28537/2
     """
     return tensor.element_size() * tensor.numel()
+
+
+def full_print_tensor(tensor: torch.Tensor):
+    torch.set_printoptions(profile="full")
+    print(tensor)
+    torch.set_printoptions(profile="default")
