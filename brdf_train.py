@@ -444,7 +444,6 @@ if __name__ == "__main__":
                 camera_normals_normed, camera_to_world_transform_batch
             )  # (N, H * W, 3)
 
-            start_time = time.process_time()
             outgoing_radiance = (
                 batch_eval_blinn_phong_outgoing_radiance_with_probe_mem_save(
                     probe_incoming_light_colors,
@@ -457,7 +456,6 @@ if __name__ == "__main__":
                     spec_c,
                 )
             )  # (B, HW, 3)
-            print(f"BRDF Eval took {time.process_time() - start_time}s")
 
             # TODO: How to handle "color penalty"? Maybe penalize each of the maps from getting too far away from the main rendered color idk.
             # loss = (
@@ -471,7 +469,6 @@ if __name__ == "__main__":
             )  # (B, HW, 3)
 
             loss = loss_fn(outgoing_radiance, rendered_color_batch)
-            print(f"{loss = }")
             loss.backward()
 
             # Check gradient norms
