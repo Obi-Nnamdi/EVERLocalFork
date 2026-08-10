@@ -11,7 +11,7 @@ from arguments import (
 from argparse import ArgumentParser
 from utils.tensor_utils import p_by_c_tensor_to_chw, unsqueezed_chw_tensor_to_p_by_c
 from neural_brdf import (
-    BRDF_normal_predictor,
+    Tiny_BRDF_Normal_Predictor,
     transform_normals_to_world_space,
     eval_blinn_phong_outgoing_radiance,
     FullModelOutput,
@@ -195,7 +195,9 @@ if __name__ == "__main__":
     )
 
     # Instanciate the BRDF_normal_predictor
-    brdf_normal_model = BRDF_normal_predictor(global_image_height, global_image_width)
+    brdf_normal_model = Tiny_BRDF_Normal_Predictor(
+        global_image_height, global_image_width
+    )
     brdf_normal_model = brdf_normal_model.cuda()
     brdf_normal_model.train()
 

@@ -6,7 +6,7 @@ from arguments import (
 )
 from argparse import ArgumentParser
 from neural_brdf import (
-    BRDF_normal_predictor,
+    UNet_BRDF_Normal_Predictor,
     batch_transform_normals_to_world_space,
     get_stacked_camera_to_world_rotation_tensor,
     eval_blinn_phong_outgoing_radiance,
@@ -71,7 +71,7 @@ def report_visual_metrics_to_tensorboard(
     global_image_height: int,
     global_image_width: int,
     outgoing_directions: torch.Tensor,
-    brdf_normal_model: BRDF_normal_predictor,
+    brdf_normal_model: UNet_BRDF_Normal_Predictor,
     step_num: int,
     model_output: FullModelOutput,
     Kd: torch.Tensor,
@@ -377,7 +377,9 @@ if __name__ == "__main__":
     )
 
     # Instanciate the BRDF_normal_predictor
-    brdf_normal_model = BRDF_normal_predictor(global_image_height, global_image_width)
+    brdf_normal_model = UNet_BRDF_Normal_Predictor(
+        global_image_height, global_image_width
+    )
     brdf_normal_model = brdf_normal_model.cuda()
     brdf_normal_model.train()
 
@@ -472,7 +474,7 @@ if __name__ == "__main__":
             loss.backward()
 
             # Check gradient norms
-            parameters = brdf_normal_model.conv1.parameters()
+            parameters = brdf_normal_model.d3.parameters()
             norm_type = 2
             total_norm = torch.norm(
                 torch.stack(

@@ -1,7 +1,7 @@
 from arguments import ModelParams, PipelineParams, OptimizationParams
 from argparse import ArgumentParser
 from neural_brdf import (
-    BRDF_normal_predictor,
+    Tiny_BRDF_Normal_Predictor,
     transform_normals_to_world_space,
 )
 from raytracing import (
@@ -89,7 +89,7 @@ if __name__ == "__main__":
     incoming_light_size = test_sphere_o.size(0) * 3  # N vectors that have [r, g, b]
 
     # Instanciate the BRDF_normal_predictor
-    brdf_normal_model = BRDF_normal_predictor(
+    brdf_normal_model = Tiny_BRDF_Normal_Predictor(
         global_image_height, global_image_width, incoming_light_size
     )
     brdf_normal_model = brdf_normal_model.cuda()
@@ -101,7 +101,7 @@ if __name__ == "__main__":
 
     model_state_dict = torch.load(model_checkpoint_path)
     brdf_normal_model.load_state_dict(model_state_dict)
-    
+
     print(f"Loaded model checkpoint.")
 
     # Create a figure showing predicted diffuse, specular, and normal maps:
@@ -126,10 +126,10 @@ if __name__ == "__main__":
     # Get Incoming Light for all points
     rays_o, rays_d = ever_renderer.get_rays(rendering_cam)
     xyz_map = depth_map_to_xyz(rays_o, rays_d, depth_map)  # (H, W, 3)
-    
+
     # all_rows, all_cols = torch.meshgrid([torch.arange(global_image_height), torch.arange(global_image_width)])
     all_rows, all_cols = torch.meshgrid([torch.arange(100, 150), torch.arange(100, 150)])
-    
+
     all_rows = all_rows.ravel()
     all_cols = all_cols.ravel()
 

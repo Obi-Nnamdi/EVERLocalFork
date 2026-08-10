@@ -11,7 +11,7 @@ from raytracing import (
 )
 from utils.general_utils import safe_state
 import sys
-from typing import TypedDict, Any
+from typing import TypedDict, Any, cast
 
 from scene.cameras import MiniCam
 from gaussian_renderer.ever import get_ray_directions
@@ -254,7 +254,218 @@ class FullModelOutput(TypedDict):
     normal: torch.Tensor
 
 
-class BRDF_normal_predictor(nn.Module):
+# Adapted from https://github.com/nikhilroxtomar/Semantic-Segmentation-Architecture/blob/main/PyTorch/resunet.py
+class batchnorm_relu(nn.Module):
+    def __init__(self, in_channels: int):
+        super().__init__()
+
+        self.bn = nn.BatchNorm2d(in_channels)
+        self.relu = nn.ReLU()
+
+    def forward(self, inputs: torch.Tensor):
+        x = self.bn(inputs)
+        x = self.relu(x)
+        return x
+
+
+class residual_block(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int, stride: int = 1):
+        super().__init__()
+
+        """ Convolutional layer """
+        self.b1 = batchnorm_relu(in_channels)
+        self.c1 = nn.Conv2d(
+            in_channels, out_channels, kernel_size=3, padding=1, stride=stride
+        )
+        self.b2 = batchnorm_relu(out_channels)
+        self.c2 = nn.Conv2d(
+            out_channels, out_channels, kernel_size=3, padding=1, stride=1
+        )
+
+        """ Shortcut Connection (Identity Mapping) """
+        self.s = nn.Conv2d(
+            in_channels, out_channels, kernel_size=1, padding=0, stride=stride
+        )
+
+    def forward(self, inputs: torch.Tensor):
+        x = self.b1(inputs)
+        x = self.c1(x)
+        x = self.b2(x)
+        x = self.c2(x)
+        s = self.s(inputs)
+
+        skip = x + s
+        return skip
+
+
+class decoder_block(nn.Module):
+    def __init__(self, in_c: int, out_c: int):
+        super().__init__()
+
+        self.upsample = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
+        self.r = residual_block(in_c + out_c, out_c)
+
+    def forward(self, inputs: torch.Tensor, skip: torch.Tensor):
+        x = self.upsample(inputs)
+        _, _, skip_H, skip_W = skip.shape
+
+        # Correct mismatches between skip and upsampled input dimensions
+        x = x[:, :, :skip_H, :skip_W]
+
+        x = torch.cat([x, skip], dim=1)
+        x = self.r(x)
+        return x
+
+
+class UNet_BRDF_Normal_Predictor(nn.Module):
+    def __init__(self, img_height: int, img_width: int) -> None:
+        super().__init__()
+
+        self.img_height = img_height
+        self.img_width = img_width
+
+        self.diffuse_brdf_size = 3
+        self.spec_brdf_size = 4
+        self.normal_size = 2  # (x, y) components of tangent plane vector
+        self.max_spec_c = 16
+        self.starting_input_channels = 4  # (RGBD)
+
+        # Define U-Net architecture with residual connections on image
+        """ Encoder 1 """
+        self.encoder_1_size = 16
+        self.c11 = nn.Conv2d(
+            self.starting_input_channels, self.encoder_1_size, kernel_size=3, padding=1
+        )
+        self.br1 = batchnorm_relu(self.encoder_1_size)
+        self.c12 = nn.Conv2d(
+            self.encoder_1_size, self.encoder_1_size, kernel_size=3, padding=1
+        )
+        self.c13 = nn.Conv2d(
+            self.starting_input_channels, self.encoder_1_size, kernel_size=1, padding=0
+        )
+
+        """ Encoder 2 and 3 """
+        self.encoder_2_size = 32
+        self.encoder_3_size = 64
+        self.r2 = residual_block(self.encoder_1_size, self.encoder_2_size, stride=2)
+        self.r3 = residual_block(self.encoder_2_size, self.encoder_3_size, stride=2)
+
+        """ Bridge """
+        self.bridge_size = 128
+        self.r4 = residual_block(self.encoder_3_size, self.bridge_size, stride=2)
+
+        """ Decoder """
+        self.d1 = decoder_block(self.bridge_size, self.encoder_3_size)
+        self.d2 = decoder_block(self.encoder_3_size, self.encoder_2_size)
+        self.d3 = decoder_block(self.encoder_2_size, self.encoder_1_size)
+
+        """ Output """
+        self.output = nn.Conv2d(
+            self.encoder_1_size,
+            self.diffuse_brdf_size + self.spec_brdf_size + self.normal_size,
+            kernel_size=1,
+            padding=0,
+        )
+
+        self.brdf_activation_function = nn.Softplus(beta=10)  # matches EVER method.
+        self.spec_c_activation_function = nn.Sigmoid()
+        self.normal_soft_cap = 20  # Soft capped from [-20, 20]
+
+        # TODO: support multiple types of BRDFs eventually?
+
+    def forward(self, image: torch.Tensor) -> FullModelOutput:
+        """
+        Input:
+            image: (N, C, H, W)
+
+        Output:
+            brdf:
+                diffuse: (N, 3, H, W)
+                specular: (N, 3, H, W)
+                specular_c: (N, 1, H, W)
+            normal:
+                (N, 3, H, W)
+        """
+
+        # Adapted from https://github.com/nikhilroxtomar/Semantic-Segmentation-Architecture/blob/558a6b88108a58aac21ce4109397022e21cc6f1c/PyTorch/resunet.py#L78
+
+        """ Encoder 1 """
+        img_features = self.c11(image)
+        img_features = self.br1(img_features)
+        img_features = self.c12(img_features)
+        s1 = self.c13(image)
+        skip1 = img_features + s1
+
+        print(f"{skip1.shape = }")
+
+        """ Encoder 2 and 3 """
+        skip2 = self.r2(skip1)
+
+        print(f"{skip2.shape = }")
+
+        skip3 = self.r3(skip2)
+        print(f"{skip3.shape = }")
+
+        """ Bridge """
+        b = self.r4(skip3)
+        print(f"{b.shape = }")
+
+        """ Decoder """
+        d1 = self.d1(b, skip3)
+        d2 = self.d2(d1, skip2)
+        d3 = self.d3(d2, skip1)
+
+        """ output """
+        output_features = cast(torch.Tensor, self.output(d3))  # (N, BRDF_size, H, W)
+
+        # Extract each of our value types and apply our specific activation functions
+        diffuse_brdf_features = output_features[:, : self.diffuse_brdf_size]
+        specular_brdf_features = output_features[
+            :,
+            self.diffuse_brdf_size : self.diffuse_brdf_size + self.spec_brdf_size - 1,
+        ]
+        specular_c_features = output_features[
+            :,
+            self.diffuse_brdf_size
+            + self.spec_brdf_size
+            - 1 : self.diffuse_brdf_size
+            + self.spec_brdf_size,
+        ]
+        normal_features = output_features[:, -self.normal_size :]
+
+        # Apply Activation functions
+        diffuse_brdf_features = self.brdf_activation_function(diffuse_brdf_features)
+        specular_brdf_features = self.brdf_activation_function(specular_brdf_features)
+
+        specular_c_features = (
+            self.spec_c_activation_function(specular_c_features) * self.max_spec_c
+        )  # Clips specular c value to be from 0 -> 16
+
+        # "Soft Capping" Trick to prevent normals from growing too large: https://pytorch.org/blog/flexattention/
+        # TODO: Can try replacing with linear activation function to see if there's a difference in performance
+        normal_features = normal_features / self.normal_soft_cap
+        normal_features = nn.functional.tanh(normal_features)
+        normal_features = normal_features * self.normal_soft_cap
+
+        # TODO: refine arguments
+        # Best way to structure this...all as one tensor or as multiple?
+
+        output_dict = {
+            "brdf": {
+                "diffuse": diffuse_brdf_features,
+                # RGB + specular C
+                "specular": specular_brdf_features,
+                "specular_c": specular_c_features,
+            },
+            "normal": create_normals_from_tangent_space(
+                normal_features
+            ),  # TODO: don't do this automatically? Basically just adds an extra 1 dimension so it's not too bad though
+        }
+
+        return cast(FullModelOutput, output_dict)
+
+
+class Tiny_BRDF_Normal_Predictor(nn.Module):
 
     def __init__(self, img_height: int, img_width: int) -> None:
         super().__init__()
@@ -553,7 +764,7 @@ if __name__ == "__main__":
         (camera_pos - xyz_map[chosen_point]).reshape(1, 3)
     )
 
-    normal_predictor = BRDF_normal_predictor(
+    normal_predictor = UNet_BRDF_Normal_Predictor(
         rendering_cam.image_height, rendering_cam.image_width
     )
     normal_predictor = normal_predictor.cuda()
@@ -616,7 +827,7 @@ if __name__ == "__main__":
     start_time = time.process_time()
     outgoing_radiance_slang = eval_blinn_phong_outgoing_radiance(
         incoming_light,
-        incoming_light_dirs,
+        incoming_light_dirs[0],
         outgoing_dir,
         world_normal,
         Kd,
