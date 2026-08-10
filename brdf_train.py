@@ -440,7 +440,7 @@ if __name__ == "__main__":
 
             # BRDF reconstruction
             camera_normals_normed = nn.functional.normalize(
-                camera_normals_unnormed, dim=1
+                camera_normals_unnormed, dim=2
             )
             world_normals = batch_transform_normals_to_world_space(
                 camera_normals_normed, camera_to_world_transform_batch

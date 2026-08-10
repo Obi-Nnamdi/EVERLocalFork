@@ -394,21 +394,15 @@ class UNet_BRDF_Normal_Predictor(nn.Module):
         img_features = self.br1(img_features)
         img_features = self.c12(img_features)
         s1 = self.c13(image)
-        skip1 = img_features + s1
-
-        print(f"{skip1.shape = }")
+        skip1 = img_features + s1  # (B, E1, H, W)
 
         """ Encoder 2 and 3 """
-        skip2 = self.r2(skip1)
+        skip2 = self.r2(skip1)  # (B, E2, ceil(H / 2),  ceil(W / 2))
 
-        print(f"{skip2.shape = }")
-
-        skip3 = self.r3(skip2)
-        print(f"{skip3.shape = }")
+        skip3 = self.r3(skip2)  # (B, E3, ceil(H / 4), ceil(W / 4))
 
         """ Bridge """
-        b = self.r4(skip3)
-        print(f"{b.shape = }")
+        b = self.r4(skip3)  # (B, E4, ceil(H / 8),  ceil(W / 8))
 
         """ Decoder """
         d1 = self.d1(b, skip3)
