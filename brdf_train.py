@@ -310,16 +310,12 @@ if __name__ == "__main__":
     rendered_images = cache_dict["full_rendered_images"]  # (N, 4, H, W)
     full_scene_point_cloud = cache_dict["full_scene_point_cloud"]  # (N, H * W, 3)
     probe_incoming_light_colors = cache_dict["incoming_light_probe_colors"]  # (P, R, 3)
-    probe_incoming_light_directions = cache_dict[
-        "incoming_light_probe_directions"
-    ]  # (R, 3)
-    incoming_light_query_mapping = cache_dict[
-        "incoming_light_probe_query"
-    ]  # (N, 1, H, W)
+    probe_light_directions = cache_dict["light_probe_directions"]  # (R, 3)
+    light_query_mapping = cache_dict["light_probe_query"]  # (N, 1, H, W)
 
     # Reshape query probe to be ready for putting into the slangtorch kernel
-    incoming_light_query_mapping = (
-        nchw_tensor_to_npc(incoming_light_query_mapping).squeeze(-1).contiguous()
+    light_query_mapping = (
+        nchw_tensor_to_npc(light_query_mapping).squeeze(-1).contiguous()
     )  # (N, HW)
 
     # Use cache to get global image height and width:
@@ -329,9 +325,7 @@ if __name__ == "__main__":
     print(
         f"Loaded Images are at {global_image_width} x {global_image_height} (w x h) resolution."
     )
-    print(
-        f"Number of incoming light directions: {probe_incoming_light_directions.size(0)}"
-    )
+    print(f"Number of incoming light directions: {probe_light_directions.size(0)}")
 
     # Handle creation of some early tensor operations we'll always use throughout training
     camera_positions = torch.stack(
@@ -367,7 +361,7 @@ if __name__ == "__main__":
     # Build our full dataset
     training_dataset = TensorDataset(
         rendered_images,
-        incoming_light_query_mapping,
+        light_query_mapping,
         outgoing_directions,
         cameras_to_world_rotation,
     )
@@ -449,7 +443,7 @@ if __name__ == "__main__":
             outgoing_radiance = (
                 batch_eval_blinn_phong_outgoing_radiance_with_probe_mem_save(
                     probe_incoming_light_colors,
-                    probe_incoming_light_directions,
+                    probe_light_directions,
                     query_batch,
                     outgoing_dir_batch,
                     world_normals,
@@ -498,7 +492,7 @@ if __name__ == "__main__":
                     writer,
                     rendered_image_batch,
                     probe_incoming_light_colors,
-                    probe_incoming_light_directions,
+                    probe_light_directions,
                     query_batch,
                     global_image_height,
                     global_image_width,

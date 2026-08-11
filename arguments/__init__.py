@@ -207,6 +207,9 @@ class BRDFOptmizationParams(ParamGroup):
             16  # Batch size to use for training the model with the cache.
         )
 
+        # Outgoing Light Parameters
+        self.outgoing_light_t_offset = 0.001  # How far away to place the ray origin from the point we're looking at.
+
         super().__init__(parser, "BRDF Optimization Parameters")
 
     def extract(self, args):

@@ -226,6 +226,59 @@ def gather_incoming_light_at_points(
     return incoming_light, base_rays_o, base_rays_d
 
 
+def gather_outgoing_light_at_points(
+    points: torch.Tensor,
+    renderer: FastRenderer,
+    sphere_divisions=10,
+    ray_origin_offset_factor=0.001,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Inputs:
+        points: (N, 3) of all the points to analyze
+        renderer: Renderer to query light directions from
+        sphere_divisions: divisions to break up light queries into
+        ray_origin_offset_factor= how far away from each point to start the light query,
+
+    Outputs:
+        incoming_light: (N, R, 3) where each point gets R sources of incoming light
+        sphere_ray_o: (N, R, 3)
+        sphere_ray_d: (N, R, 3)
+    """
+    starter_sphere_rays, _ = generate_spherical_rays(
+        torch.zeros(
+            3,
+        ),
+        divisions=sphere_divisions,
+    )  # (R, 3), (R, 3)
+
+    R = starter_sphere_rays.size(0)
+    N = points.size(0)
+
+    # Create our base ray origins and directions for generating outgoing light (looking inward)
+    # Create our origins by taking our original sphere ray directions (pointing out) and adding them to our point origin
+
+    base_rays_o = (
+        points[:, None, :].expand(-1, R, -1)
+        + starter_sphere_rays[None, :, :].expand(N, -1, -1) * ray_origin_offset_factor
+    ).contiguous()  # (N, R, 3)
+
+    # Directions are formed by inverting our original sphere rays
+    base_rays_d = -starter_sphere_rays[None, :, :].expand(N, -1, -1).contiguous()
+
+    # Do one Big call to trace_rays
+    rays_o = base_rays_o.reshape(N * R, 3)
+    rays_d = base_rays_d.reshape(N * R, 3)
+
+    # TODO: T-min is always going to be 0 as long as we have this formulation of using the ray origin offset,
+    # but maybe there's a smarter way?
+    probe_image = renderer.trace_rays_using_shs(rays_o, rays_d, 0, 1e7)
+
+    colors = probe_image["color"][:, :3]  # (N * R, 3)
+    incoming_light = colors.reshape(N, R, 3)
+
+    return incoming_light, base_rays_o, base_rays_d
+
+
 def generate_spherical_rays(
     point: torch.Tensor, divisions=10
 ) -> tuple[torch.Tensor, torch.Tensor]:

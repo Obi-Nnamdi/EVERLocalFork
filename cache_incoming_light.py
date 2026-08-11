@@ -13,6 +13,7 @@ from raytracing import (
     render_gaussians,
     generate_spherical_rays,
     gather_incoming_light_at_points,
+    gather_outgoing_light_at_points,
 )
 from utils.general_utils import safe_state
 from utils.tensor_utils import size_of_tensor_bytes
@@ -34,11 +35,20 @@ matplotlib.use("Agg")  # headless mode
 
 # Class for the returned cache dictionary
 class BRDFCacheDict(TypedDict):
+    """
+    N is the number of cameras.
+    C = 4, Channels of each rendered image (RGBA)
+    H, W are the height and width of each rendered image.
+    P is the number of probe points (<= HW)
+    R is the number of rays used to sample light
+    """
+
     full_rendered_images: torch.Tensor  # (N, C, H, W)
     full_scene_point_cloud: torch.Tensor  # (N, H * W, 3)
     incoming_light_probe_colors: torch.Tensor  # (P, R, 3)
-    incoming_light_probe_directions: torch.Tensor  # (R, 3)
-    incoming_light_probe_query: torch.Tensor  # (N, 1, H, W)
+    light_probe_directions: torch.Tensor  # (R, 3)
+    light_probe_query: torch.Tensor  # (N, 1, H, W)
+    outgoing_light_probe_colors: torch.Tensor  # (P, R, 3)
 
 
 if __name__ == "__main__":
@@ -133,7 +143,7 @@ if __name__ == "__main__":
 
     # Tells each point where it needs to get its incoming light information from (I wish I could go down to
     #  int16 but the indices into the probe tensor= will likely be huge unless I guarantee it's smaller than 65K ish...)
-    incoming_light_probe_query_tensor = torch.zeros(
+    light_probe_query_tensor = torch.zeros(
         num_cameras,
         1,  # Index only
         global_image_height,
@@ -158,10 +168,10 @@ if __name__ == "__main__":
     print(f"Allocated Tensors.")
     # print(f"Full incoming light tensor size (GB): {full_incoming_light_tensor.element_size() * full_incoming_light_tensor.nelement() / 1024 / 1024 / 1024}")
     print(
-        f"Full incoming light probe tensor size (GB): {size_of_tensor_bytes(incoming_light_probe_tensor) / 1024 / 1024 / 1024}"
+        f"Full incoming and outgoing light probe tensor size (GB): {size_of_tensor_bytes(incoming_light_probe_tensor) / 1024 / 1024 / 1024}"
     )
     print(
-        f"Probe query tensor size (GB): {size_of_tensor_bytes(incoming_light_probe_query_tensor) / 1024 / 1024 / 1024}"
+        f"Probe query tensor size (GB): {size_of_tensor_bytes(light_probe_query_tensor) / 1024 / 1024 / 1024}"
     )
     print(
         f"Full camera images tensor size (GB): {size_of_tensor_bytes(full_rendered_images_tensor) / 1024 / 1024 / 1024}"
@@ -217,12 +227,15 @@ if __name__ == "__main__":
     probe_point_xyz = probe_point_xyz.cuda()
     collapsed_point_cloud = collapsed_point_cloud.cuda()
 
-    print("Generating Incoming Light Probe...")
+    print("Generating Outgoing and Incoming Light Probe...")
     full_incoming_light_colors = torch.empty(
         0,
     ).cuda()
+    full_outgoing_light_colors = torch.empty(
+        0,
+    ).cuda()
 
-    # Generate our incoming light in batches according to our batch size:
+    # Generate our incoming and outgoing light in batches according to our batch size:
     incoming_light_batch_size = cast(int, args.incoming_light_batch_size)
     probe_point_batches = torch.split(probe_point_xyz, incoming_light_batch_size, dim=0)
     incoming_light_dirs = None
@@ -239,14 +252,26 @@ if __name__ == "__main__":
             [full_incoming_light_colors, incoming_light_colors]
         )
 
-    incoming_light_probe_tensor = (
-        full_incoming_light_colors.cpu()
-    )  # Copy back to CPU to get our probe tensor
+        # Outgoing light
+        outgoing_light_colors, _, _ = gather_outgoing_light_at_points(
+            probe_batch,
+            ever_renderer,
+            sphere_divisions=brdf_args.incoming_light_divisions,
+            ray_origin_offset_factor=brdf_args.outgoing_light_t_offset,
+        )
+        full_outgoing_light_colors = torch.cat(
+            [full_outgoing_light_colors, outgoing_light_colors]
+        )
+
+    # Copy back to CPU to get our probe tensors
+    incoming_light_probe_tensor = full_incoming_light_colors.cpu()
+    outgoing_light_probe_tensor = full_outgoing_light_colors.cpu()
 
     assert incoming_light_dirs is not None
-    incoming_light_probe_tensor_directions = incoming_light_dirs[
+    light_probe_tensor_directions = incoming_light_dirs[
         0
     ].cpu()  # Constant for every single point, so no need to keep track of all of them and waste space
+
     print("Generating Probe Query Tensor...")
     # Get how close we are to each of the other points
     # Compute nearest neighbor for the point clouds a batch at a time to save memory.
@@ -283,15 +308,16 @@ if __name__ == "__main__":
     closest_points = closest_points.view(num_cameras, global_image_height, global_image_width, 1)
     closest_points = closest_points.permute(0, 3, 1, 2) # (N, 1, H, W)
 
-    incoming_light_probe_query_tensor[:] = closest_points.cpu()
+    light_probe_query_tensor[:] = closest_points.cpu()
 
     # Save out all of our tensors into a dictionary.
     cache_save_dict: BRDFCacheDict = {
         "full_rendered_images": full_rendered_images_tensor,
         "full_scene_point_cloud": full_scene_point_cloud,
         "incoming_light_probe_colors": incoming_light_probe_tensor,
-        "incoming_light_probe_directions": incoming_light_probe_tensor_directions,
-        "incoming_light_probe_query": incoming_light_probe_query_tensor,
+        "light_probe_directions": light_probe_tensor_directions,
+        "light_probe_query": light_probe_query_tensor,
+        "outgoing_light_probe_colors": outgoing_light_probe_tensor,
     }
 
     print("Saving Tensors...")
