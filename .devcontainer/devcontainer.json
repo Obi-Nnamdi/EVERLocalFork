@@ -45,7 +45,8 @@
         "shader-slang.slang-language-extension",
         "ms-vscode.cpptools",
         "eamodio.gitlens",
-        "ms-python.black-formatter"
+        "ms-python.black-formatter",
+        "mechatroner.rainbow-csv"
       ],
       "settings": {
         "remote.localPortHost": "127.0.0.1",

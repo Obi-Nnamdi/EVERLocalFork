@@ -3,7 +3,7 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
 #
-# This software is free for non-commercial, research and evaluation use 
+# This software is free for non-commercial, research and evaluation use
 # under the terms of the LICENSE.md file.
 #
 # For inquiries contact  george.drettakis@inria.fr
@@ -55,7 +55,7 @@ def get_major_axis_density(opacity, scales):
     densities = inv_opacity(opacity) / max_integration_length
 
     return densities.reshape(-1)
-    
+
 
 @torch.jit.script
 def get_minor_axis_density(opacity, scales):
@@ -64,7 +64,7 @@ def get_minor_axis_density(opacity, scales):
 
     densities = inv_opacity(opacity).reshape(min_integration_length.shape) / min_integration_length
     return densities
-    
+
 def divide_opacity(opacity, scales):
     density = get_minor_axis_density(opacity, scales).reshape(opacity.shape) / 2
     minor_axis = scales.min(dim=-1).values.reshape(opacity.shape)
@@ -111,7 +111,7 @@ class GaussianModel:
             actual_covariance = L @ L.transpose(1, 2)
             symm = strip_symmetric(actual_covariance)
             return symm
-        
+
         self.max_prim_size = 250.0
         self.min_prim_size = SCALING2RADIUS*1e-4
 
@@ -126,7 +126,6 @@ class GaussianModel:
 
         self.density_activation = lambda x: torch.exp(x).clip(max=1000)
         self.inverse_density_activation = lambda y: torch.log(y.clip(min=1e-10))
-
 
         self.feature_activation = lambda x:x
         self.inverse_feature_activation = lambda x:x
@@ -174,7 +173,7 @@ class GaussianModel:
             self.glo,
             self.glo_network
         )
-    
+
     def restore(self, model_args, training_args):
         (self.active_sh_degree, 
         self._xyz, 
@@ -219,19 +218,19 @@ class GaussianModel:
     @property
     def get_scaling(self):
         return self.scaling_activation(self._scaling)
-    
+
     @property
     def get_opacity(self):
         return self.opacity_activation(self._opacity)
-    
+
     @property
     def get_rotation(self):
         return self.rotation_activation(self._rotation)
-    
+
     @property
     def get_xyz(self):
         return self._xyz
-    
+
     @property
     def get_features(self):
         features_dc = self.feature_activation(self._features_dc)
@@ -279,7 +278,6 @@ class GaussianModel:
         scales = 1*torch.sqrt(dist2)[...,None].repeat(1, 3)
         rots = torch.rand((fused_point_cloud.shape[0], 4), device="cuda")
         rots = torch.nn.functional.normalize(rots)
-
 
         # add points using sphere init
         opacities = inverse_sigmoid(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
@@ -347,7 +345,6 @@ class GaussianModel:
                                                     lr_delay_mult=training_args.position_lr_delay_mult,
                                                     max_steps=training_args.position_lr_max_steps)
 
-
     def update_learning_rate(self, iteration):
         ''' Learning rate scheduling per step '''
         for param_group in self.optimizer.param_groups:
@@ -390,6 +387,62 @@ class GaussianModel:
             elements[attribute] = attributes[:, i]
         # elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
+        PlyData([el]).write(path)
+
+    def construct_list_of_rendering_attributes(self):
+        """
+        Attributes for saving a .ply to be imported into Blender.
+        """
+        l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
+        # All channels except the 3 DC
+        for i in range(self._features_dc.shape[1]*self._features_dc.shape[2]):
+            l.append('f_dc_{}'.format(i))
+        for i in range(self._features_rest.shape[1]*self._features_rest.shape[2]):
+            l.append('f_rest_{}'.format(i))
+        l.append('density')
+        l.append('opacity')
+        for i in range(self._scaling.shape[1]):
+            l.append('scale_{}'.format(i))
+        for i in range(self._rotation.shape[1]):
+            l.append('rot_{}'.format(i))
+        return l
+
+
+    def save_blender_ply(self, path: os.PathLike):
+        mkdir_p(os.path.dirname(path))
+
+        xyz = self._xyz.detach().cpu().numpy()
+        normals = np.zeros_like(
+            xyz
+        )  # Don't need normals for now but keeping them around
+        # f_dc = self._features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+        # f_rest = self._features_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+        f_dc = (
+            self._features_dc.detach().flatten(start_dim=1).contiguous().cpu().numpy()
+        )
+        f_rest = (
+            self._features_rest.detach().flatten(start_dim=1).contiguous().cpu().numpy()
+        )
+        visual_scale, visual_density = self.get_scale_and_density_for_rendering(
+            per_point_2d_filter_scale=1, scaling_modifier=1.0
+        )  # taken from fast_renderer.py
+        densities = visual_density.detach().cpu().numpy()
+        opacities = self.get_opacity.detach().cpu().numpy()
+        scale = visual_scale.detach().cpu().numpy()
+        rotation = self.get_rotation.detach().cpu().numpy()
+
+        dtype_full = [
+            (attribute, "f4") for attribute in self.construct_list_of_rendering_attributes()
+        ]
+
+        elements = np.empty((xyz.shape[0]), dtype=dtype_full)
+        attributes = np.concatenate(
+            (xyz, normals, f_dc, f_rest, densities, opacities, scale, rotation), axis=1
+        )
+        for i, (attribute, _) in enumerate(dtype_full):
+            elements[attribute] = attributes[:, i]
+
+        el = PlyElement.describe(elements, "vertex")
         PlyData([el]).write(path)
 
     def reset_opacity(self, value=0.01):
@@ -701,7 +754,7 @@ class GaussianModel:
 
     def update_death_mark(self):
         self.death_mark = (self.death_mark + torch.where(self.max_radii2D.reshape(-1) == 0, 1, -1)).clip(min=-5, max=5)
-        
+
         small_points = self.death_mark > 3
 
         prune_mask = torch.zeros_like(small_points)

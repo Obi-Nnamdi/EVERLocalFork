@@ -67,7 +67,7 @@ class ParamGroup:
                 else:
                     group.add_argument("--" + key, default=value, type=t)
 
-    def extract(self, args):
+    def extract(self, args: Namespace):
         group = GroupParams()
         for arg in vars(args).items():
             if arg[0] in vars(self) or ("_" + arg[0]) in vars(self):
