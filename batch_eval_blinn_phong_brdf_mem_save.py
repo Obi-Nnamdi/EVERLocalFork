@@ -1,28 +1,16 @@
-from typing import Any, Optional, cast
+from typing import Any, cast
 
 import torch
 from torch.autograd import Function
 
 # Import and build our custom slangtorch kernel for evaluating BRDFs.
-from pathlib import Path
-import slangtorch
 
-# Constants
-MAX_INCOMING_LIGHT_DIRECTIONS_FOR_LOOP_EVAL = 400  # How many incoming light directions are we using at maximum? (used for checkpointing incoming light kernel)
-USE_CHECKPOINTING_FOR_INCOMING_LIGHT_PROBE_BACKWARD_PASS = False
-MAX_NUMEL_FOR_SLANGTORCH = 4294967295 // 2  # close to INT32 overflow
-
-kernels = slangtorch.loadModule(
-    str(Path(__file__).parent / "ever/splinetracers/slang/brdf_eval.slang"),
-    defines={
-        "MAX_INCOMING_LIGHT_DIRECTIONS_FOR_LOOP_EVAL": MAX_INCOMING_LIGHT_DIRECTIONS_FOR_LOOP_EVAL,
-        "USE_CHECKPOINTING_FOR_INCOMING_LIGHT_PROBE_BACKWARD_PASS": int(
-            USE_CHECKPOINTING_FOR_INCOMING_LIGHT_PROBE_BACKWARD_PASS
-        ),
-    },
-    skipNinjaCheck=True,
+from slangtorch_kernel_compilation import (
+    MAX_INCOMING_LIGHT_DIRECTIONS_FOR_LOOP_EVAL,
+    MAX_NUMEL_FOR_SLANGTORCH,
+    USE_CHECKPOINTING_FOR_INCOMING_LIGHT_PROBE_BACKWARD_PASS,
+    brdf_eval_kernels,
 )
-
 
 class BatchEvalBlinnPhongBRDFMemSave(Function):
     """
@@ -65,7 +53,7 @@ class BatchEvalBlinnPhongBRDFMemSave(Function):
         # (uint saturation?)
         assert output.numel() < MAX_NUMEL_FOR_SLANGTORCH
 
-        brdf_eval_kernel = kernels.eval_outgoing_radiance_blinn_phong_with_incoming_light_cache_mem_save(
+        brdf_eval_kernel = brdf_eval_kernels.eval_outgoing_radiance_blinn_phong_with_incoming_light_cache_mem_save(
             probe_incoming_light=probe_incoming_light,
             probe_incoming_light_dirs=probe_incoming_light_dirs,
             incoming_light_probe_query=incoming_light_probe_query,
@@ -131,7 +119,7 @@ class BatchEvalBlinnPhongBRDFMemSave(Function):
         spec_reflect_c_grad = torch.zeros_like(spec_reflect_c)
 
         # Create backwards kernel and run it
-        brdf_eval_kernel_bwd = kernels.eval_outgoing_radiance_blinn_phong_with_incoming_light_cache_mem_save.bwd(
+        brdf_eval_kernel_bwd = brdf_eval_kernels.eval_outgoing_radiance_blinn_phong_with_incoming_light_cache_mem_save.bwd(
             probe_incoming_light=probe_incoming_light,
             probe_incoming_light_dirs=probe_incoming_light_dirs,
             incoming_light_probe_query=incoming_light_probe_query,
@@ -210,7 +198,7 @@ class BatchEvalBlinnPhongBRDFMultiOutgoingLight(Function):
         assert output.numel() < MAX_NUMEL_FOR_SLANGTORCH
 
         brdf_eval_kernel = (
-            kernels.eval_outgoing_radiance_at_multiple_directions_with_probe(
+            brdf_eval_kernels.eval_outgoing_radiance_at_multiple_directions_with_probe(
                 probe_incoming_light=probe_incoming_light,
                 probe_incoming_light_dirs=probe_incoming_light_dirs,
                 probe_outgoing_light=probe_outgoing_light,
@@ -280,24 +268,22 @@ class BatchEvalBlinnPhongBRDFMultiOutgoingLight(Function):
         spec_reflect_c_grad = torch.zeros_like(spec_reflect_c)
 
         # Create backwards kernel and run it
-        brdf_eval_kernel_bwd = (
-            kernels.eval_outgoing_radiance_at_multiple_directions_with_probe_bwd(
-                probe_incoming_light=probe_incoming_light,
-                probe_incoming_light_dirs=probe_incoming_light_dirs,
-                probe_outgoing_light=probe_outgoing_light,
-                probe_outgoing_light_dirs=probe_outgoing_light_dirs,
-                light_probe_query=light_probe_query,
-                normals=normals,
-                normals_grad=normals_grad,
-                diffuse_K=diffuse_K,
-                diffuse_K_grad=diffuse_K_grad,
-                specular_K=specular_K,
-                specular_K_grad=specular_K_grad,
-                spec_reflect_c=spec_reflect_c,
-                spec_reflect_c_grad=spec_reflect_c_grad,
-                output=output,
-                output_grad=grad_output,
-            )
+        brdf_eval_kernel_bwd = brdf_eval_kernels.eval_outgoing_radiance_at_multiple_directions_with_probe_bwd(
+            probe_incoming_light=probe_incoming_light,
+            probe_incoming_light_dirs=probe_incoming_light_dirs,
+            probe_outgoing_light=probe_outgoing_light,
+            probe_outgoing_light_dirs=probe_outgoing_light_dirs,
+            light_probe_query=light_probe_query,
+            normals=normals,
+            normals_grad=normals_grad,
+            diffuse_K=diffuse_K,
+            diffuse_K_grad=diffuse_K_grad,
+            specular_K=specular_K,
+            specular_K_grad=specular_K_grad,
+            spec_reflect_c=spec_reflect_c,
+            spec_reflect_c_grad=spec_reflect_c_grad,
+            output=output,
+            output_grad=grad_output,
         )
 
         block_size_x = 128  # Point / HW dim

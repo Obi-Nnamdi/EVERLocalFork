@@ -7,7 +7,7 @@ from torch.autograd import Function
 from pathlib import Path
 import slangtorch
 
-from batch_eval_blinn_phong_brdf_mem_save import kernels
+from slangtorch_kernel_compilation import brdf_eval_kernels
 
 MAX_NUMEL_FOR_SLANGTORCH = 4294967295 // 2  # close to INT32 overflow
 
@@ -51,18 +51,16 @@ class BatchEvalBlinnPhongBRDF(Function):
         # (uint saturation?)
         assert output.numel() < MAX_NUMEL_FOR_SLANGTORCH
 
-        brdf_eval_kernel = (
-            kernels.eval_outgoing_radiance_blinn_phong_with_incoming_light_cache(
-                probe_incoming_light=probe_incoming_light,
-                probe_incoming_light_dirs=probe_incoming_light_dirs,
-                incoming_light_probe_query=incoming_light_probe_query,
-                outgoing_directions=outgoing_directions,
-                normals=normals,
-                diffuse_K=diffuse_K,
-                specular_K=specular_K,
-                spec_reflect_c=spec_reflect_c,
-                output=output,
-            )
+        brdf_eval_kernel = brdf_eval_kernels.eval_outgoing_radiance_blinn_phong_with_incoming_light_cache(
+            probe_incoming_light=probe_incoming_light,
+            probe_incoming_light_dirs=probe_incoming_light_dirs,
+            incoming_light_probe_query=incoming_light_probe_query,
+            outgoing_directions=outgoing_directions,
+            normals=normals,
+            diffuse_K=diffuse_K,
+            specular_K=specular_K,
+            spec_reflect_c=spec_reflect_c,
+            output=output,
         )
 
         # Max thread count is 1024 (32^2), higher values raise an error.
@@ -121,18 +119,16 @@ class BatchEvalBlinnPhongBRDF(Function):
         spec_reflect_c_grad = torch.zeros_like(spec_reflect_c)
 
         # Create backwards kernel and run it
-        brdf_eval_kernel_bwd = (
-            kernels.eval_outgoing_radiance_blinn_phong_with_incoming_light_cache.bwd(
-                probe_incoming_light=probe_incoming_light,
-                probe_incoming_light_dirs=probe_incoming_light_dirs,
-                incoming_light_probe_query=incoming_light_probe_query,
-                outgoing_directions=outgoing_directions,
-                normals=(normals, normals_grad),
-                diffuse_K=(diffuse_K, diffuse_K_grad),
-                specular_K=(specular_K, specular_K_grad),
-                spec_reflect_c=(spec_reflect_c, spec_reflect_c_grad),
-                output=(output, grad_output),
-            )
+        brdf_eval_kernel_bwd = brdf_eval_kernels.eval_outgoing_radiance_blinn_phong_with_incoming_light_cache.bwd(
+            probe_incoming_light=probe_incoming_light,
+            probe_incoming_light_dirs=probe_incoming_light_dirs,
+            incoming_light_probe_query=incoming_light_probe_query,
+            outgoing_directions=outgoing_directions,
+            normals=(normals, normals_grad),
+            diffuse_K=(diffuse_K, diffuse_K_grad),
+            specular_K=(specular_K, specular_K_grad),
+            spec_reflect_c=(spec_reflect_c, spec_reflect_c_grad),
+            output=(output, grad_output),
         )
 
         block_size_x = 64  # Point / HW dim

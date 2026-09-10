@@ -1,6 +1,6 @@
 from arguments import ModelParams, PipelineParams, OptimizationParams
 from argparse import ArgumentParser
-from extra_model_architectures import Blinn_Phong_BRDF
+from old_scripts.extra_model_architectures import Blinn_Phong_BRDF
 from raytracing import (
     build_gaussian_renderer,
     depth_map_to_xyz,
@@ -25,13 +25,7 @@ import time
 from pathlib import Path
 import slangtorch
 
-kernels = slangtorch.loadModule(
-    str(Path(__file__).parent / "ever/splinetracers/slang/brdf_eval.slang"),
-    defines={
-        "MAX_INCOMING_LIGHT_DIRECTIONS_FOR_LOOP_EVAL": 10
-    },  # Shouldn't be calling the big batch kernel using this version of the module
-)
-
+from slangtorch_kernel_compilation import brdf_eval_kernels
 
 class EvalBlinnPhongBRDF(Function):
     """
@@ -68,7 +62,7 @@ class EvalBlinnPhongBRDF(Function):
         # TODO: Fill with an arbitrary value that can be masked later (nan? inf?).
         output = torch.full_like(incoming_light, float("inf"))
 
-        brdf_eval_kernel = kernels.eval_outgoing_radiance_blinn_phong(
+        brdf_eval_kernel = brdf_eval_kernels.eval_outgoing_radiance_blinn_phong(
             incoming_light=incoming_light,
             incoming_light_dirs=incoming_light_dirs,
             outgoing_directions=outgoing_directions,
@@ -133,7 +127,7 @@ class EvalBlinnPhongBRDF(Function):
         spec_reflect_c_grad = torch.zeros_like(spec_reflect_c)
 
         # Create backwards kernel and run it
-        brdf_eval_kernel_bwd = kernels.eval_outgoing_radiance_blinn_phong.bwd(
+        brdf_eval_kernel_bwd = brdf_eval_kernels.eval_outgoing_radiance_blinn_phong.bwd(
             incoming_light=incoming_light,
             incoming_light_dirs=incoming_light_dirs,
             outgoing_directions=outgoing_directions,
