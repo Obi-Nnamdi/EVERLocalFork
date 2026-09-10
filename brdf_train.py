@@ -1,3 +1,7 @@
+"""
+Example Usage: python brdf_train.py -m /data/trained_model -s /data/scene  --training_epochs=5 --cache_location=/data/trained_model/brdf_ever_cache/full_cache_dict.pt --detect_anomaly
+"""
+
 from arguments import (
     ModelParams,
     PipelineParams,
@@ -310,6 +314,7 @@ if __name__ == "__main__":
     rendered_images = cache_dict["full_rendered_images"]  # (N, 4, H, W)
     full_scene_point_cloud = cache_dict["full_scene_point_cloud"]  # (N, H * W, 3)
     probe_incoming_light_colors = cache_dict["incoming_light_probe_colors"]  # (P, R, 3)
+    probe_outgoing_light_colors = cache_dict["outgoing_light_probe_colors"]  # (P, R, 3)
     probe_light_directions = cache_dict["light_probe_directions"]  # (R, 3)
     light_query_mapping = cache_dict["light_probe_query"]  # (N, 1, H, W)
 
