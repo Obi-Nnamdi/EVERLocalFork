@@ -120,7 +120,7 @@ if __name__ == "__main__":
     constant_normals = True
 
     probe_incoming_light_dirs = test_incoming_sphere_d
-
+    torch.manual_seed(130)
     # Boring incoming light that is constant for every point for now
     if constant_incoming_light:
         probe_incoming_light_color = (
@@ -134,19 +134,24 @@ if __name__ == "__main__":
             (num_probe_points, test_incoming_sphere_o.size(0), 3)
         ).cuda()  # (P, N, 3)
 
-    probe_outgoing_light_dirs = -test_outgoing_sphere_d # Invert sphere directions for outgoing light
+    light_brightening_factor = 1.2
+    probe_incoming_light_color = probe_incoming_light_color * light_brightening_factor
 
+    probe_outgoing_light_dirs = -test_outgoing_sphere_d # Invert sphere directions for outgoing light
+    # Create outgoing light color residuals
+    residual_factor = 20
     if constant_outgoing_light:
         probe_outgoing_light_color = (
             torch.rand((1, test_outgoing_sphere_o.size(0), 3))
             .expand(num_probe_points, -1, -1)
             .contiguous()
             .cuda()
-        )  # (P, O, 3)
+        ) / residual_factor  # (P, O, 3)
     else:
-        probe_outgoing_light_color = torch.rand(
-            (num_probe_points, test_outgoing_sphere_o.size(0), 3)
-        ).cuda()  # (P, O, 3)
+        probe_outgoing_light_color = (
+            torch.rand((num_probe_points, test_outgoing_sphere_o.size(0), 3)).cuda()
+            / residual_factor
+        )  # (P, O, 3)
 
     # Neater way to specify random toy tensors
     def rand_1_by_n_by_3(const: bool, num_points: int):
@@ -169,10 +174,10 @@ if __name__ == "__main__":
     else:
         golden_specular_c = torch.rand((num_points,)).cuda() * max_spec_c
 
-    golden_specular_c = golden_specular_c[None, :] # (1, P,)
+    golden_specular_c = golden_specular_c[None, :]  # (1, P,)
 
     golden_normals = nn.functional.normalize(
-        rand_1_by_n_by_3(constant_normals, num_points), dim=1
+        rand_1_by_n_by_3(constant_normals, num_points), dim=-1
     )  # (P, 3)
 
     # Generate our rendered image to show to the model
@@ -192,8 +197,32 @@ if __name__ == "__main__":
         golden_diffuse_color,
         golden_specular_color,
         golden_specular_c,
-    )[0]  # (P, 3)
+    )[
+        0
+    ]  # (P, 3)
+
     print(f"{rendered_colors = }")
+    print(f"{light_query_mapping = }")
+    print(f"{probe_incoming_light_color = }")
+    print(f"{fake_outgoing_dirs = }")
+    print(f"{golden_normals = }")
+    print(f"{golden_diffuse_color = }")
+
+    # Now that we've rendered our golden color, add it to our residuals so that we can have a neater convergence.
+    # (The predicted BRDF will actually be realistic from multiple angles)
+
+    full_rendered_colors_to_probe_idx = torch.linspace(
+        0, num_points - 1, num_probe_points, dtype=torch.int32, device="cuda:0"
+    )  # (Pr,)
+
+    subsampled_rendered_colors = rendered_colors[full_rendered_colors_to_probe_idx][
+        :, None, :
+    ].broadcast_to(
+        probe_outgoing_light_color.size()
+    )  # (Pr, O, 3)
+
+    probe_outgoing_light_color = probe_outgoing_light_color + subsampled_rendered_colors
+    ####
 
     # Create model inputs
     rendered_image_rgb = p_by_c_tensor_to_chw(
@@ -221,7 +250,7 @@ if __name__ == "__main__":
     brdf_normal_model.train()
 
     # Training Config
-    loss_fn = nn.MSELoss()
+    loss_fn = nn.MSELoss(reduction="none")
     color_penalty = 0.5
 
     lr = 0.001
@@ -246,9 +275,7 @@ if __name__ == "__main__":
         # Collect Model Outputs
         Kd = nchw_tensor_to_npc(model_output["brdf"]["diffuse"])  # (1, P, 3)
         Ks = nchw_tensor_to_npc(model_output["brdf"]["specular"])  # (1, P, 3)
-        spec_c = nchw_tensor_to_npc(
-            model_output["brdf"]["specular_c"]
-        ).squeeze(
+        spec_c = nchw_tensor_to_npc(model_output["brdf"]["specular_c"]).squeeze(
             -1
         )  # (1, P, )
 
@@ -270,32 +297,39 @@ if __name__ == "__main__":
         #     (camera_pos - all_points_xyz), dim=1
         # )  # (P, 3)
 
-        outgoing_radiance = batch_eval_blinn_phong_outgoing_radiance_with_probe_mem_save(
-            probe_incoming_light_color,
-            probe_incoming_light_dirs,
-            light_query_mapping,
-            fake_outgoing_dirs,
-            camera_normals_normed,
-            Kd,
-            Ks,
-            spec_c,
-        )[0]  # (P, 3)
+        outgoing_radiance = (
+            batch_eval_blinn_phong_outgoing_radiance_with_probe_mem_save(
+                probe_incoming_light_color,
+                probe_incoming_light_dirs,
+                light_query_mapping,
+                fake_outgoing_dirs,
+                camera_normals_normed,
+                Kd,
+                Ks,
+                spec_c,
+            )[0]
+        )  # (P, 3)
 
-        outgoing_color_diff = batch_eval_blinn_phong_varying_outgoing_radiance_with_probe(
-            probe_incoming_light_color,
-            probe_incoming_light_dirs,
-            probe_outgoing_light_color,
-            probe_outgoing_light_dirs,
-            light_query_mapping,
-            camera_normals_normed,
-            Kd,
-            Ks,
-            spec_c,
-        ) # (P, 3)
+        outgoing_color_diff = (
+            batch_eval_blinn_phong_varying_outgoing_radiance_with_probe(
+                probe_incoming_light_color,
+                probe_incoming_light_dirs,
+                probe_outgoing_light_color,
+                probe_outgoing_light_dirs,
+                light_query_mapping,
+                camera_normals_normed,
+                Kd,
+                Ks,
+                spec_c,
+            )
+        )  # (P, 3)
 
         # Combine both active rendered image difference and outgoing color diff.
-        # loss = loss_fn(outgoing_radiance, rendered_colors) + torch.mean(outgoing_color_diff)
-        loss = torch.mean(outgoing_color_diff)
+        # We now have the summed color difference for all the viewing angles (rendering cam + outgoing directions), and so we can divide by
+        # the total number of cameras (1 + outgoing_dirs since we're including rendering cam)
+        full_diff = loss_fn(outgoing_radiance, rendered_colors) + outgoing_color_diff
+        full_diff = full_diff / (probe_outgoing_light_dirs.size(0) + 1)
+        loss = torch.mean(full_diff)  # Reduce our diff down to one loss number.
 
         loss.backward()
 
