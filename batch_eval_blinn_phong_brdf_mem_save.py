@@ -132,7 +132,7 @@ class BatchEvalBlinnPhongBRDFMemSave(Function):
         )
 
         block_size_x = 256  # Point / HW dim
-        block_size_y = 4  # Batch dim
+        block_size_y = 2  # Batch dim
         block_size_z = 1  # No light dim
         brdf_eval_kernel_bwd.launchRaw(
             blockSize=(block_size_x, block_size_y, block_size_z),
