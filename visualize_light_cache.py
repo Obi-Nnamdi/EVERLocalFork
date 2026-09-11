@@ -1,8 +1,9 @@
 """
 Usage:
-python visualize_light_cache.py -m /data/trained_model --cache_location=/data/trained_model/brdf_ever_cache/full_cache_dict.pt
+python visualize_light_cache.py -m /data/trained_model --cache_location=/data/trained_model/brdf_ever_cache/full_cache_dict.pt (--save_gaussians)
 """
 
+import shutil
 import torch
 from arguments import (
     ModelParams,
@@ -41,6 +42,13 @@ if __name__ == "__main__":
         default=None,
         help="Checkpoint to resume ever model from.",
     )
+    parser.add_argument(
+        "--save_gaussians",
+        action="store_true",
+        default=False,
+        help="Whether to save the rendered gaussians out.",
+    )
+
     lp = ModelParams(parser)
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
@@ -108,25 +116,39 @@ if __name__ == "__main__":
 
     # Create a (P, R * 3 + R * 3) point cloud of the incoming and outgoing light at a point
     P, R, _ = cache_dict["incoming_light_probe_colors"].shape
-    flattened_incoming_colors = cache_dict["incoming_light_probe_colors"].reshape(P, -1) # (P, R * 3)
-    flattened_outgoing_colors = cache_dict["outgoing_light_probe_colors"].reshape(P,  -1) # (P, R * 3)
+    O, _ = cache_dict["outgoing_light_probe_directions"].shape
+    flattened_incoming_colors = cache_dict["incoming_light_probe_colors"].reshape(
+        P, -1
+    )  # (P, R * 3)
+    flattened_outgoing_colors = cache_dict["outgoing_light_probe_colors"].reshape(
+        P, -1
+    )  # (P, R * 3)
 
-    all_probe_colors = torch.cat([flattened_incoming_colors, flattened_outgoing_colors], dim=-1)
+    all_probe_colors = torch.cat(
+        [flattened_incoming_colors, flattened_outgoing_colors], dim=-1
+    )
 
     # Define column names for dataframe
     incoming_color_cols: list[str] = []
     outgoing_color_cols: list[str] = []
     for i in range(R):
         incoming_light_col_names = [f"in_ray_{i}_r", f"in_ray_{i}_g", f"in_ray_{i}_b"]
-        outgoing_light_col_names = [f"out_ray_{i}_r", f"out_ray_{i}_g", f"out_ray_{i}_b"]
-
         incoming_color_cols.extend(incoming_light_col_names)
+
+    for i in range(O):
+        outgoing_light_col_names = [
+            f"out_ray_{i}_r",
+            f"out_ray_{i}_g",
+            f"out_ray_{i}_b",
+        ]
         outgoing_color_cols.extend(outgoing_light_col_names)
 
     all_col_names = incoming_color_cols + outgoing_color_cols
 
     # Create dataframe and save out to CSV
-    probe_colors_df = pd.DataFrame(all_probe_colors.cpu().numpy(), columns=all_col_names)
+    probe_colors_df = pd.DataFrame(
+        all_probe_colors.cpu().numpy(), columns=all_col_names
+    )
     light_probe_save_filename = visualization_save_dir / f"light_probe_colors.csv"
     probe_colors_df.to_csv(light_probe_save_filename)
     print(f"Saved light probe to {light_probe_save_filename}")
@@ -136,10 +158,30 @@ if __name__ == "__main__":
         cache_dict["incoming_light_probe_directions"].cpu().numpy(),
         columns=["x", "y", "z"],
     )
-    light_probe_direction_save_filename = visualization_save_dir / "light_probe_directions.csv"
+    incoming_light_probe_direction_save_filename = (
+        visualization_save_dir / "incoming_light_probe_directions.csv"
+    )
 
-    light_probe_directions_df.to_csv(light_probe_direction_save_filename)
-    print(f"Saved light probe directions to {light_probe_direction_save_filename}")
+    light_probe_directions_df.to_csv(incoming_light_probe_direction_save_filename)
+    print(
+        f"Saved incoming light probe directions to {incoming_light_probe_direction_save_filename}"
+    )
+
+    # Save out our outgoing light directions
+    outgoing_light_probe_directions_df = pd.DataFrame(
+        cache_dict["outgoing_light_probe_directions"].cpu().numpy(),
+        columns=["x", "y", "z"],
+    )
+    outgoing_light_probe_direction_save_filename = (
+        visualization_save_dir / "outgoing_light_probe_directions.csv"
+    )
+
+    outgoing_light_probe_directions_df.to_csv(
+        outgoing_light_probe_direction_save_filename
+    )
+    print(
+        f"Saved light probe directions to {outgoing_light_probe_direction_save_filename}"
+    )
 
     # Save all the images we've rendered out to disk for later blender visualization
     image_save_folder = visualization_save_dir / "rendered_images"
@@ -149,10 +191,22 @@ if __name__ == "__main__":
         image_name = f"rendered_img_{index:03d}.jpg"
         save_rgb_image(image, image_save_folder / image_name)
 
-    # Save out our original gaussians for visualization
-    print("Loading Gaussians...")
-    gaussians = load_gaussian_model(model_params, optim_params, args.start_ever_checkpoint)
-    print(f"Loaded Gaussian, Active SH Degree: {gaussians.active_sh_degree}")
-    gaussian_ply_file_name = visualization_save_dir / "gaussians.ply"
-    gaussians.save_blender_ply(gaussian_ply_file_name)
-    print(f"Saved Gaussians to disk at {gaussian_ply_file_name.absolute()}")
+    if args.save_gaussians:
+        # Save out our original gaussians for visualization
+        print("Loading Gaussians...")
+        gaussians = load_gaussian_model(
+            model_params, optim_params, args.start_ever_checkpoint
+        )
+        print(f"Loaded Gaussian, Active SH Degree: {gaussians.active_sh_degree}")
+        gaussian_ply_file_name = visualization_save_dir / "gaussians.ply"
+        gaussians.save_blender_ply(gaussian_ply_file_name)
+        print(f"Saved Gaussians to disk at {gaussian_ply_file_name.absolute()}")
+
+    # Compress entire folder for easy transport
+    print(f"Compressing Folder...")
+    saved_filename = shutil.make_archive(
+        str(visualization_save_dir.parent / "viz_folder_archive"),
+        "zip",
+        visualization_save_dir,
+    )
+    print(f"Saved archive file to {saved_filename}")
