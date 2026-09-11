@@ -98,7 +98,6 @@ if __name__ == "__main__":
             f"Sampling {brdf_args.point_batch_size} pixels per iteration for loss calculation."
         )
 
-
     # Calculate how big our incoming light features will be when input into our model.
     test_incoming_sphere_d, test_incoming_sphere_o = generate_spherical_rays(
         torch.zeros((3,)), incoming_light_sphere_divisions
@@ -108,8 +107,6 @@ if __name__ == "__main__":
     test_outgoing_sphere_d, test_outgoing_sphere_o = generate_spherical_rays(
         torch.zeros((3,)), outgoing_light_sphere_divisions
     )  # (O, 3)
-
-
 
     # Generate a simple point query tensor (strech probe point indices across actual points dim)
     light_query_mapping = torch.linspace(0, num_probe_points - 1, num_points, dtype=torch.int32)[None, :].cuda() # (1, P)
@@ -121,7 +118,6 @@ if __name__ == "__main__":
     constant_spec_shininess = True
     constant_diff_brdf = True
     constant_normals = True
-
 
     probe_incoming_light_dirs = test_incoming_sphere_d
 
@@ -137,7 +133,6 @@ if __name__ == "__main__":
         probe_incoming_light_color = torch.rand(
             (num_probe_points, test_incoming_sphere_o.size(0), 3)
         ).cuda()  # (P, N, 3)
-
 
     probe_outgoing_light_dirs = -test_outgoing_sphere_d # Invert sphere directions for outgoing light
 
@@ -264,7 +259,6 @@ if __name__ == "__main__":
         ###### BRDF reconstruction ######
         camera_normals_normed = nn.functional.normalize(camera_normals_unnormed, dim=-1)
 
-
         # TODO: Add in world normal transformation with a rendering cam?
         # world_normals = transform_normals_to_world_space(
         #     camera_normals_normed, rendering_cam
@@ -305,7 +299,6 @@ if __name__ == "__main__":
 
         loss.backward()
 
-
         optimizer.step()
 
         if step_num % brdf_args.image_reporting_interval == 0:
@@ -314,9 +307,6 @@ if __name__ == "__main__":
             tqdm.write(f"{outgoing_radiance = }")
             tqdm.write(f"{outgoing_color_diff = }")
             tqdm.write(f"{loss = }")
-            printfn = tqdm.write
-            printfn(f"{camera_normals_unnormed = }")
-            printfn(f"{camera_normals_normed = }")
 
     print("Final Results:")
     print(f"{golden_specular_c - spec_c = }")

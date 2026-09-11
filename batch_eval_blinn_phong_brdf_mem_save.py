@@ -187,8 +187,9 @@ class BatchEvalBlinnPhongBRDFMultiOutgoingLight(Function):
 
         Outputs:
             color_diff: (B, HW, 3) R,G,B values that specify the difference in color between the outgoing light probe and the rendered BRDF colors
-            for each point (specified by Batch Size B and HW), averaged across all the probe outgoing light directions.
+            for each point (specified by Batch Size B and HW), summed across all the probe outgoing light directions.
         """
+
         B, HW, _ = normals.shape
         _, N, _ = probe_incoming_light.shape
         output = torch.zeros((B, HW, 3), device="cuda", dtype=torch.float)
@@ -286,7 +287,7 @@ class BatchEvalBlinnPhongBRDFMultiOutgoingLight(Function):
             output_grad=grad_output,
         )
 
-        block_size_x = 128  # Point / HW dim
+        block_size_x = 256  # Point / HW dim
         block_size_y = 2  # Batch dim
         block_size_z = 1  # No light dim
         brdf_eval_kernel_bwd.launchRaw(
@@ -415,7 +416,7 @@ def batch_eval_blinn_phong_varying_outgoing_radiance_with_probe(
 
     Outputs:
         color_diff: (B, HW, 3) R,G,B values that specify the difference in color between the outgoing light probe and the rendered BRDF colors
-        for each point (specified by Batch Size B and HW), averaged across all the probe outgoing light directions.
+        for each point (specified by Batch Size B and HW), summed across all the probe outgoing light directions.
     """
 
     # Assertions for debugging.
