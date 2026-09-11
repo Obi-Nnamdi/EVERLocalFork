@@ -80,7 +80,6 @@ if __name__ == "__main__":
     pc_dataframe.to_csv(scene_pc_filename, index=False)
     print(f"Saved Scene Point Cloud CSV at {scene_pc_filename}")
 
-
     print("Performing Camera Operations...")
     cameras = get_cameras(model_params)
     # print(f"Camera World-To-Cam Transform: \n{cameras[1].world_view_transform}")
@@ -88,14 +87,13 @@ if __name__ == "__main__":
     print(f"Blender Camera FOV: {math.degrees(cameras[1].FoVx)} deg")
     print(f"{cameras[1].image_width = }")
     print(f"{cameras[1].image_height = }")
-    
+
     # Writing transforms to CSV in column-major order
     print(f"Saving Camera Transforms: ")
     # Getting column names to write to CSV
     mat_size = 4 # (4 x 4) Transformation Matrices
     col_indices, row_indices = torch.meshgrid(torch.arange(mat_size), torch.arange(mat_size), indexing="ij")
     camera_transform_column_names = [f"c{i + 1}_r{j + 1}" for i, j in zip(col_indices.ravel(), row_indices.ravel())]
-
 
     # Convert to dataframe then to CSV
     all_transforms = torch.stack([camera.world_view_transform.T.ravel() for camera in cameras], dim=0)
@@ -134,7 +132,10 @@ if __name__ == "__main__":
     print(f"Saved light probe to {light_probe_save_filename}")
 
     # Save out our incoming light directions
-    light_probe_directions_df = pd.DataFrame(cache_dict["light_probe_directions"].cpu().numpy(), columns=["x", "y", "z"])
+    light_probe_directions_df = pd.DataFrame(
+        cache_dict["incoming_light_probe_directions"].cpu().numpy(),
+        columns=["x", "y", "z"],
+    )
     light_probe_direction_save_filename = visualization_save_dir / "light_probe_directions.csv"
 
     light_probe_directions_df.to_csv(light_probe_direction_save_filename)

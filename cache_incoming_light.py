@@ -1,3 +1,8 @@
+"""
+Example Usage:
+python cache_incoming_light.py -m /data/trained_model -s /data/scene --preview_factor=64 --incoming_light_divisions=8 --outgoing_light_divisions=4
+"""
+
 from arguments import (
     ModelParams,
     PipelineParams,
@@ -40,15 +45,17 @@ class BRDFCacheDict(TypedDict):
     C = 4, Channels of each rendered image (RGBA)
     H, W are the height and width of each rendered image.
     P is the number of probe points (<= HW)
-    R is the number of rays used to sample light
+    I is the number of rays used to sample incoming light
+    O is the number of rays used to sample outgoing light
     """
 
     full_rendered_images: torch.Tensor  # (N, C, H, W)
     full_scene_point_cloud: torch.Tensor  # (N, H * W, 3)
-    incoming_light_probe_colors: torch.Tensor  # (P, R, 3)
-    light_probe_directions: torch.Tensor  # (R, 3)
+    incoming_light_probe_colors: torch.Tensor  # (P, I, 3)
+    incoming_light_probe_directions: torch.Tensor  # (I, 3)
+    outgoing_light_probe_colors: torch.Tensor  # (P, O, 3)
+    outgoing_light_probe_directions: torch.Tensor  # (O, 3)
     light_probe_query: torch.Tensor  # (N, 1, H, W)
-    outgoing_light_probe_colors: torch.Tensor  # (P, R, 3)
 
 
 if __name__ == "__main__":
@@ -239,6 +246,7 @@ if __name__ == "__main__":
     incoming_light_batch_size = cast(int, args.incoming_light_batch_size)
     probe_point_batches = torch.split(probe_point_xyz, incoming_light_batch_size, dim=0)
     incoming_light_dirs = None
+    outgoing_light_dirs = None
     for probe_batch in tqdm(probe_point_batches, total=len(probe_point_batches)):
         incoming_light_colors, _, incoming_light_dirs = gather_incoming_light_at_points(
             probe_batch,
@@ -253,10 +261,10 @@ if __name__ == "__main__":
         )
 
         # Outgoing light
-        outgoing_light_colors, _, _ = gather_outgoing_light_at_points(
+        outgoing_light_colors, _, outgoing_light_dirs = gather_outgoing_light_at_points(
             probe_batch,
             ever_renderer,
-            sphere_divisions=brdf_args.incoming_light_divisions,
+            sphere_divisions=brdf_args.outgoing_light_divisions,
             ray_origin_offset_factor=brdf_args.outgoing_light_t_offset,
         )
         full_outgoing_light_colors = torch.cat(
@@ -267,10 +275,11 @@ if __name__ == "__main__":
     incoming_light_probe_tensor = full_incoming_light_colors.cpu()
     outgoing_light_probe_tensor = full_outgoing_light_colors.cpu()
 
+    # Store our directions - constant for every single point, so no need to keep track of all of them and waste space
     assert incoming_light_dirs is not None
-    light_probe_tensor_directions = incoming_light_dirs[
-        0
-    ].cpu()  # Constant for every single point, so no need to keep track of all of them and waste space
+    assert outgoing_light_dirs is not None
+    incoming_light_probe_tensor_directions = incoming_light_dirs[0].cpu()
+    outgoing_light_probe_tensor_directions = outgoing_light_dirs[0].cpu()
 
     print("Generating Probe Query Tensor...")
     # Get how close we are to each of the other points
@@ -315,9 +324,10 @@ if __name__ == "__main__":
         "full_rendered_images": full_rendered_images_tensor,
         "full_scene_point_cloud": full_scene_point_cloud,
         "incoming_light_probe_colors": incoming_light_probe_tensor,
-        "light_probe_directions": light_probe_tensor_directions,
-        "light_probe_query": light_probe_query_tensor,
+        "incoming_light_probe_directions": incoming_light_probe_tensor_directions,
         "outgoing_light_probe_colors": outgoing_light_probe_tensor,
+        "outgoing_light_probe_directions": outgoing_light_probe_tensor_directions,
+        "light_probe_query": light_probe_query_tensor,
     }
 
     print("Saving Tensors...")
