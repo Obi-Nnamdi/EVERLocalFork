@@ -119,8 +119,8 @@ COPY . /ever_training
 
 RUN ls /opt/OptiX_7.4
 
-ENV TORCH_CUDA_ARCH_LIST="5.0;6.0;6.1;7.0;7.5;8.0;8.6;9.0"
-ENV CUDAARCHS="50 60 61 70 75 80 86 90"
+ENV TORCH_CUDA_ARCH_LIST="6.0;6.1;7.0;7.5;8.0;8.6;9.0"
+ENV CUDAARCHS="60 61 70 75 80 86 90"
 ENV LD_LIBRARY_PATH="/slang_install/lib/"
 
 WORKDIR /ever_training
@@ -135,18 +135,18 @@ RUN source activate ever && \
 # # Copy again to reflect code changes
 # COPY . /ever_training
 
-# Comment out everything below this to build the prelim image:
+# # Comment out everything below this to build the prelim image:
     
-RUN source activate ever && \
-    rm -rf ever/build && \
-    bash install_splinetracer.bash
+# RUN source activate ever && \
+#     rm -rf ever/build && \
+#     bash install_splinetracer.bash
 
-# Unset LD_LIBRARY_PATH to avoid problems with slangtorch later
-ENV LD_LIBRARY_PATH=
+# # Unset LD_LIBRARY_PATH to avoid problems with slangtorch later
+# ENV LD_LIBRARY_PATH=
 
-# Expose any ports needed for training or viewer
-EXPOSE 6009
+# # Expose any ports needed for training or viewer
+# EXPOSE 6009
 
-# By default, just start a shell in the 'ever' environment
-CMD ["/bin/bash", "-c", "source activate ever && exec bash"]
+# # By default, just start a shell in the 'ever' environment
+# CMD ["/bin/bash", "-c", "source activate ever && exec bash"]
 
