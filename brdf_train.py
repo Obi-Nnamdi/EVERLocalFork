@@ -1,5 +1,6 @@
 """
-Example Usage: python brdf_train.py -m /data/trained_model -s /data/scene  --training_epochs=5 --cache_location=/data/trained_model/brdf_ever_cache/full_cache_dict.pt --detect_anomaly
+Example Usage:
+python brdf_train.py -m /data/trained_model -s /data/scene --cache_evaluation_batch_size=200  --training_epochs=5 --cache_location=/data/trained_model/brdf_ever_cache/full_cache_dict.pt --detect_anomaly
 """
 
 from arguments import (
@@ -19,6 +20,7 @@ from neural_brdf import (
 
 from batch_eval_blinn_phong_brdf_mem_save import (
     batch_eval_blinn_phong_outgoing_radiance_with_probe_mem_save,
+    batch_eval_blinn_phong_varying_outgoing_radiance_with_probe,
 )
 
 from raytracing import (
@@ -315,7 +317,12 @@ if __name__ == "__main__":
     full_scene_point_cloud = cache_dict["full_scene_point_cloud"]  # (N, H * W, 3)
     probe_incoming_light_colors = cache_dict["incoming_light_probe_colors"]  # (P, R, 3)
     probe_outgoing_light_colors = cache_dict["outgoing_light_probe_colors"]  # (P, R, 3)
-    probe_light_directions = cache_dict["light_probe_directions"]  # (R, 3)
+    probe_incoming_light_directions = cache_dict[
+        "incoming_light_probe_directions"
+    ]  # (R, 3)
+    probe_outgoing_light_directions = cache_dict[
+        "outgoing_light_probe_directions"
+    ]  # (R, 3)
     light_query_mapping = cache_dict["light_probe_query"]  # (N, 1, H, W)
 
     # Reshape query probe to be ready for putting into the slangtorch kernel
@@ -330,7 +337,9 @@ if __name__ == "__main__":
     print(
         f"Loaded Images are at {global_image_width} x {global_image_height} (w x h) resolution."
     )
-    print(f"Number of incoming light directions: {probe_light_directions.size(0)}")
+    print(
+        f"Number of incoming light directions: {probe_incoming_light_directions.size(0)}"
+    )
 
     # Handle creation of some early tensor operations we'll always use throughout training
     camera_positions = torch.stack(
@@ -390,7 +399,7 @@ if __name__ == "__main__":
         print(f"Loaded model checkpoint.")
 
     # Training Config
-    loss_fn = nn.MSELoss()
+    squared_error_loss_fn = nn.MSELoss(reduction="none")
     color_penalty = 0.5
 
     lr = 0.001
@@ -448,7 +457,7 @@ if __name__ == "__main__":
             outgoing_radiance = (
                 batch_eval_blinn_phong_outgoing_radiance_with_probe_mem_save(
                     probe_incoming_light_colors,
-                    probe_light_directions,
+                    probe_incoming_light_directions,
                     query_batch,
                     outgoing_dir_batch,
                     world_normals,
@@ -469,7 +478,36 @@ if __name__ == "__main__":
                 rendered_image_batch[:, :3]
             )  # (B, HW, 3)
 
-            loss = loss_fn(outgoing_radiance, rendered_color_batch)
+            total_outgoing_color_squared_diff = (
+                batch_eval_blinn_phong_varying_outgoing_radiance_with_probe(
+                    probe_incoming_light_colors,
+                    probe_incoming_light_directions,
+                    probe_outgoing_light_colors,
+                    probe_outgoing_light_directions,
+                    query_batch,
+                    world_normals,
+                    Kd,
+                    Ks,
+                    spec_c,
+                )
+            )  # (B, HW, 3)
+
+            # Combine both active rendered image difference and outgoing color diff.
+            # We now have the summed color difference for all the viewing angles (rendering cam + outgoing directions), and so we can divide by
+            # the total number of cameras (1 + outgoing_dirs since we're including rendering cam)
+            num_loss_cameras = (
+                probe_outgoing_light_directions.size(0) + 1
+            )  # Add one for the main viewing camera
+            observed_rendering_diff = (
+                squared_error_loss_fn(outgoing_radiance, rendered_color_batch)
+                / num_loss_cameras
+            )  # Difference between colors observed from main camera
+            other_outgoing_directions_rendering_diff = (
+                total_outgoing_color_squared_diff / num_loss_cameras
+            )
+            loss = torch.mean(
+                observed_rendering_diff + other_outgoing_directions_rendering_diff
+            )
             loss.backward()
 
             # Check gradient norms
@@ -486,6 +524,16 @@ if __name__ == "__main__":
 
             # Add loss and other metrics
             writer.add_scalar("Train/loss", loss.detach().cpu(), step_num)
+            writer.add_scalar(
+                "Train/main_cam_rendering_error",
+                torch.mean(observed_rendering_diff).detach().cpu(),
+                step_num,
+            )
+            writer.add_scalar(
+                "Train/other_outgoing_directions_error",
+                torch.mean(other_outgoing_directions_rendering_diff).detach().cpu(),
+                step_num,
+            )
             writer.add_scalar("Train/grad_norm_1", total_norm.cpu(), step_num)
 
             if step_num % brdf_args.image_reporting_interval == 0:
@@ -497,7 +545,7 @@ if __name__ == "__main__":
                     writer,
                     rendered_image_batch,
                     probe_incoming_light_colors,
-                    probe_light_directions,
+                    probe_incoming_light_directions,
                     query_batch,
                     global_image_height,
                     global_image_width,
