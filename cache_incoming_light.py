@@ -1,7 +1,9 @@
 """
 Example Usage:
-python cache_incoming_light.py -m /data/trained_model -s /data/scene --preview_factor=64 --incoming_light_divisions=8 --outgoing_light_divisions=4
+python cache_incoming_light.py -m /data/trained_model -s /data/scene --preview_factor=64 --incoming_light_divisions=8 --outgoing_light_divisions=4 --num_probe_points=40
 """
+
+import time
 
 from arguments import (
     ModelParams,
@@ -26,16 +28,12 @@ import sys
 from tqdm import tqdm
 
 import torch
+from simple_knn._C import distIndexQ
 
 from pathlib import Path
 import os
 
 from typing import cast, TypedDict
-
-# Graphing
-import matplotlib
-
-matplotlib.use("Agg")  # headless mode
 
 
 # Class for the returned cache dictionary
@@ -292,22 +290,67 @@ if __name__ == "__main__":
     min_distances = torch.empty(0,).cuda()
     closest_points = torch.empty(0).cuda()
 
+    start_time = time.process_time()
+
     P = probe_point_xyz.size(0)
-    for i, pc_batch in tqdm(enumerate(point_cloud_batches), total=len(point_cloud_batches)):
+    for i, pc_batch in tqdm(
+        enumerate(point_cloud_batches), total=len(point_cloud_batches)
+    ):
         # pc_batch has shape (B, 3)
         B = pc_batch.size(0)
         # Expand the point cloud and probe points to be the same size: (B, P, 3), then reduce the last dimension and take topKs.
-        expanded_pc_batch = pc_batch[:, None, :].expand(-1, P, -1) # (B, P, 3) - add a singleton dimension then expand
-        expanded_probe_batch = probe_point_xyz[None, :, :].expand(B, -1, -1) # (B, P, 3)
+        expanded_pc_batch = pc_batch[:, None, :].expand(
+            -1, P, -1
+        )  # (B, P, 3) - add a singleton dimension then expand
+        expanded_probe_batch = probe_point_xyz[None, :, :].expand(
+            B, -1, -1
+        )  # (B, P, 3)
         # Get the distances from each point to a probe point
-        all_pair_distances = torch.norm(expanded_pc_batch - expanded_probe_batch, p=2, dim=-1) # (B, P)
-
+        all_pair_distances = torch.norm(
+            expanded_pc_batch - expanded_probe_batch, p=2, dim=-1
+        )  # (B, P)
         # Get the closest points via min
-        values, indices = torch.min(all_pair_distances, dim=1)  # Both tensors (B,)
+        values, closest_indices = torch.min(
+            all_pair_distances, dim=1
+        )  # Both tensors (B,)
 
         # Build our result
         min_distances = torch.cat([min_distances, values])
-        closest_points = torch.cat([closest_points, indices])
+        closest_points = torch.cat([closest_points, closest_indices])
+
+    print(f"Time Elapsed for basic method: {time.process_time() - start_time}s")
+
+    # Complex Method
+    all_pc_indices = torch.arange(
+        collapsed_point_cloud.size(0), device="cuda:0", dtype=torch.int32
+    )
+    # Can we run this problem using the constraints we have on int32 (no index would be greater than max value?)
+    assert all_pc_indices.numel() < torch.iinfo(torch.int32).max
+    k = 1
+
+    start_time = time.process_time()
+    returned_dists, returned_indices = distIndexQ(
+        collapsed_point_cloud, all_pc_indices, rand_points.int(), k
+    )  # two tensors of shape (P,)
+    print(f"Time Elapsed for complex method: {time.process_time() - start_time}s")
+
+    # All returned indices are in the form of the regular point cloud. (we know any point we get is in rand_indices)
+    # Convert returned indices back into their respective probe point using a sparse tensor
+    # TODO: Could also modify the point cloud to move randomly chosen indices to the front but it would mess up other things I think
+    rand_points_indices = torch.arange(rand_points.size(0), device="cuda:0")
+    rand_points_lookup_tensor = torch.sparse_coo_tensor(
+        rand_points[None, :],
+        rand_points_indices,
+        device="cuda:0",  # sparse tensor indices are (1, P)
+    ).to_dense()
+
+    converted_indices = rand_points_lookup_tensor[returned_indices]
+    print(f"{rand_points_lookup_tensor = }")
+    print(f"{converted_indices = }")
+
+    print(f"{returned_dists = }")
+    print(f"{returned_indices = }")
+    print(f"{torch.mean(returned_dists) = }")
 
     print("Incoming Light Probe Statistics:")
     print(f"{torch.mean(min_distances) = }")
