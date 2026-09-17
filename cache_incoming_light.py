@@ -330,7 +330,7 @@ if __name__ == "__main__":
 
     start_time = time.process_time()
     returned_dists, returned_indices = distIndexQ(
-        collapsed_point_cloud, all_pc_indices, rand_points.int(), k
+        collapsed_point_cloud, all_pc_indices, rand_points.int().cuda(), k
     )  # two tensors of shape (P,)
     print(f"Time Elapsed for complex method: {time.process_time() - start_time}s")
 
