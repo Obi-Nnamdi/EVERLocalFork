@@ -46,7 +46,8 @@
         "ms-vscode.cpptools",
         "eamodio.gitlens",
         "ms-python.black-formatter",
-        "mechatroner.rainbow-csv"
+        "mechatroner.rainbow-csv",
+        "timonwong.shellcheck"
       ],
       "settings": {
         "remote.localPortHost": "127.0.0.1",
