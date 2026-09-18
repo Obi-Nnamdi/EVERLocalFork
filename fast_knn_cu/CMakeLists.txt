@@ -26,6 +26,36 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(pybind11)
 
+
+# Add paths to our CMake code to the module path, so they can be found automatically by
+# CMake.
+set(CMAKE_MODULE_PATH
+  "${CMAKE_SOURCE_DIR}/third_party/CMake"
+  ${CMAKE_MODULE_PATH}
+  )
+
+# Add PyTorch
+include_directories(${CONDA_PREFIX}/include)
+include_directories(/usr/include)
+include_directories(${CMAKE_SOURCE_DIR}/third_party)
+
+
+find_package(Torch REQUIRED)
+
+# Add cudaKDTree
+add_subdirectory(../submodules/cudaKDTree cudaKDTree_build)
+
+
+string(REGEX REPLACE "^([0-9]+\\.[0-9]+\\.[0-9]+).*" "\\1" TORCH_VERSION_CLEAN "${TORCH_VERSION}")
+message(STATUS "Clean Torch version: ${TORCH_VERSION_CLEAN}")
+if(${TORCH_VERSION_CLEAN} VERSION_GREATER "2.5.0")
+  add_definitions(-D_GLIBCXX_USE_CXX11_ABI=1)
+  message(STATUS "Found Torch version: ${TORCH_VERSION}. CXX11ABI=1")
+else()
+  message(STATUS "Found Torch version: ${TORCH_VERSION}. CXX11ABI=0")
+  add_definitions(-D_GLIBCXX_USE_CXX11_ABI=0)
+endif()
+
 pybind11_add_module(fast_cu_knn
   py_binding.cpp
 )
