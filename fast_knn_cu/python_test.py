@@ -1,2 +1,5 @@
+import torch
 from build import fast_cu_knn
-fast_cu_knn.run_main()
+
+
+print(fast_cu_knn.test_torch(torch.zeros((3, 1))))

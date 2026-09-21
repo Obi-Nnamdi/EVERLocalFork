@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#include "torch_binding.h"
+
 PYBIND11_MODULE(fast_cu_knn, m) {
     m.doc() = "pybind11 example module";
 
@@ -19,4 +21,5 @@ PYBIND11_MODULE(fast_cu_knn, m) {
     });
 
     m.def("run_main", run_main);
+    m.def("test_torch", runKnn);
 }
