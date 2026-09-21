@@ -8,5 +8,5 @@
 	path = ever
 	url = https://github.com/Obi-Nnamdi/EVERSubmoduleFork.git
 [submodule "submodules/cudaKDTree"]
-	path = submodules/cudaKDTree
+	path = fast_knn_cu/third_party/cudaKDTree
 	url = https://github.com/ingowald/cudaKDTree.git
