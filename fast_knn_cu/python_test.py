@@ -1,2 +1,2 @@
 from build import fast_cu_knn
-print(fast_cu_knn.foo())
+fast_cu_knn.run_main()

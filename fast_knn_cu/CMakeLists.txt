@@ -42,8 +42,17 @@ include_directories(${CMAKE_SOURCE_DIR}/third_party)
 
 find_package(Torch REQUIRED)
 
+# Find at least a 5.0 version of CUDA.
+include_directories( ${CMAKE_CURRENT_SOURCE_DIR}
+                     ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}
+                     )
+
+
+
 # Add cudaKDTree
-add_subdirectory(../submodules/cudaKDTree cudaKDTree_build)
+add_subdirectory(third_party/cudaKDTree)
+include_directories(third_party/cudaKDTree)
+target_link_libraries(cudaKDTree)
 
 
 string(REGEX REPLACE "^([0-9]+\\.[0-9]+\\.[0-9]+).*" "\\1" TORCH_VERSION_CLEAN "${TORCH_VERSION}")
@@ -58,4 +67,12 @@ endif()
 
 pybind11_add_module(fast_cu_knn
   py_binding.cpp
+  test_spatialkdtree.h
+  test_spatialkdtree.cu
 )
+
+# py_binding imports special GPU-only code so it has to be compiled with NVCC
+set_source_files_properties(py_binding.cpp PROPERTIES LANGUAGE CUDA)
+
+target_link_libraries(fast_cu_knn PRIVATE 
+${CMAKE_CUDA_RUNTIME_LIBRARY} ${TORCH_PYTHON_LIBRARIES} ${TORCH_LIBRARIES} torch torch_cpu c10 torch_cuda m)
