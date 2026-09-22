@@ -14,6 +14,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Tells CMake to build all the libraries as shared libraries by default.  This can be
+# overrided by individual libraries later.
+option(BUILD_SHARED_LIBS "Build shared libraries" ON)
 
 enable_language(CUDA)
 
@@ -51,7 +54,7 @@ include_directories( ${CMAKE_CURRENT_SOURCE_DIR}
 # Add cudaKDTree
 add_subdirectory(third_party/cudaKDTree)
 include_directories(third_party/cudaKDTree)
-target_link_libraries(cudaKDTree)
+# target_link_libraries(cudaKDTree)
 
 
 string(REGEX REPLACE "^([0-9]+\\.[0-9]+\\.[0-9]+).*" "\\1" TORCH_VERSION_CLEAN "${TORCH_VERSION}")
@@ -66,18 +69,14 @@ endif()
 
 pybind11_add_module(fast_cu_knn
   py_binding.cpp
-  test_spatialkdtree.h
-  test_spatialkdtree.cu
   torch_binding.h
   torch_binding.cu
 )
 
 # For CMake 3.16+
+# TODO: Not sure how useful this is
 target_precompile_headers(fast_cu_knn PRIVATE <torch/extension.h>)
 
 # py_binding imports special GPU-only code so it has to be compiled with NVCC
 set_source_files_properties(py_binding.cpp PROPERTIES LANGUAGE CUDA)
-
-# target_link_libraries(fast_cu_knn PRIVATE 
-# ${CMAKE_CUDA_RUNTIME_LIBRARY} ${TORCH_PYTHON_LIBRARIES} ${TORCH_LIBRARIES} torch torch_cpu c10 torch_cuda m)
 target_link_libraries(fast_cu_knn PRIVATE ${CMAKE_CUDA_RUNTIME_LIBRARY} ${TORCH_LIBRARIES})
