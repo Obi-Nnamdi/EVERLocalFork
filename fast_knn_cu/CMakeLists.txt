@@ -80,3 +80,26 @@ target_precompile_headers(fast_cu_knn PRIVATE <torch/extension.h>)
 # py_binding imports special GPU-only code so it has to be compiled with NVCC
 set_source_files_properties(py_binding.cpp PROPERTIES LANGUAGE CUDA)
 target_link_libraries(fast_cu_knn PRIVATE ${CMAKE_CUDA_RUNTIME_LIBRARY} ${TORCH_LIBRARIES})
+
+# Support pip building (Adapted from https://www.roma1.infn.it/~rovigatl/posts/pybind_cmake/)
+# Create a staging directory for the Python package
+set(PYTHON_BUILD_BASE_DIR "${CMAKE_BINARY_DIR}/python")
+set(FAST_CU_KNN_PACKAGE_DIR "${PYTHON_BUILD_BASE_DIR}/fast_cu_knn")
+# Make sure the directory exists
+file(MAKE_DIRECTORY ${FAST_CU_KNN_PACKAGE_DIR})
+
+# Place the compiled extension (.so) in that folder
+set_target_properties(fast_cu_knn
+  PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY "${FAST_CU_KNN_PACKAGE_DIR}"
+    SUFFIX ".so"
+)
+
+# Move init.py to build directory
+configure_file(__init__.py ${FAST_CU_KNN_PACKAGE_DIR}/__init__.py COPYONLY)
+
+# Are we installing using pip + scikit-build?
+if(SKBUILD)
+  # install the package to a location where scikit-build can find it
+  install(DIRECTORY ${FAST_CU_KNN_PACKAGE_DIR}/ DESTINATION cukd_py)
+endif()

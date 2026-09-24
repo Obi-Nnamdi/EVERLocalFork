@@ -1,0 +1,18 @@
+[build-system]
+requires = ["scikit-build-core>=0.9", "setuptools_scm>=8", "pybind11>=2.10"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "cukd_py"
+description = "Python bindings for cudaKDTree."
+dependencies = [
+  "torch",
+]
+version = "1.0.0"
+
+[tool.scikit-build]
+wheel.packages = ["cukd_py"]
+
+# Use local shell environment variable 
+[tool.scikit-build.cmake.define]
+CMAKE_CUDA_ARCHITECTURES = {env="CMAKE_CUDA_ARCHITECTURES", default="EMPTY"}

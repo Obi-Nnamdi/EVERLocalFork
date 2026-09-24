@@ -14,6 +14,9 @@ matplotlib
 pandas
 # Pin setuptools version to keep pkg_resources dependency
 setuptools==80.10.2
+# Also needed to build fast_cu_knn package
+scikit-build-core
+pybind11-stubgen # For IDE hints
 
 # For viewing training progress with tensorflow and tensorboard
 tensorboard
