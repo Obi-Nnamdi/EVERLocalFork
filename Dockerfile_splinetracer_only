@@ -6,16 +6,19 @@ FROM obinnamdi/ever:v1.6_prelim_image
 # chown flag is needed to prevent VSCode from breaking edit permissions
 COPY ever /ever_training/ever
 
-# Uncomment if you want to update the OptiX version:
-# RUN rm -rf /opt/OptiX_7.4
-# COPY optix_9/ /opt/OptiX_7.4
-ENV CMAKE_CUDA_ARCHITECTURES="60;61;70;75;80;86;90"
-RUN source activate ever && \
-    bash install_cukd_py.bash
-
 RUN source activate ever && \
     rm -rf ever/build && \
     bash install_splinetracer.bash
+
+# Uncomment if you want to update the OptiX version:
+# RUN rm -rf /opt/OptiX_7.4
+# COPY optix_9/ /opt/OptiX_7.4
+
+# Build fast_knn_cu extension
+COPY fast_knn_cu /ever_training/fast_knn_cu
+ENV CMAKE_CUDA_ARCHITECTURES="60;61;70;75;80;86;90"
+RUN source activate ever && \
+    bash install_cukd_py.bash
 
 # Unset LD_LIBRARY_PATH to avoid problems with slangtorch later
 ENV LD_LIBRARY_PATH=
@@ -26,6 +29,7 @@ EXPOSE 6009
 # By default, just start a shell in the 'ever' environment
 CMD ["/bin/bash", "-c", "source activate ever && exec bash"]
 
+# RUN apt update && apt install sudo
 
 # Add user for non-root VSCode DevContainer editing:
 # https://code.visualstudio.com/remote/advancedcontainers/add-nonroot-user
@@ -37,6 +41,7 @@ ARG USER_GID=$USER_UID
 # Create the user and add it to sudoers (modified from traditional VSCode Script)
 RUN adduser --uid $USER_UID $USERNAME \
     && adduser $USERNAME sudo
+# && echo $USERNAME':vscode' | chpasswd
 
 # ********************************************************
 # * Anything else you want to do like clean up goes here *
