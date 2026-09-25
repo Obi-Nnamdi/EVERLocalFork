@@ -42,14 +42,14 @@ __global__ void KnnKernel(const float3* d_queries, int numQueries,
   }
 }
 
-/**
- * Points should be a N x 3 tensor on CUDA.
- */
 torch::Tensor runKnn(const torch::Tensor& tree_points,
-                     const torch::Tensor& query_points, const float radius) {
+                     const torch::Tensor& query_points, const int K,
+                     const std::optional<float> radius) {
   // Establish pre-condition (Contiguous CUDA tensor of N x 3)
   CHECK_FLOAT_DIM3(tree_points);
   CHECK_FLOAT_DIM3(query_points);
+  CHECK(K > 0);
+  CHECK(K <= FIXED_K);
 
   const int64_t numTreePoints = tree_points.size(0);
   const int64_t numQueryPoints = query_points.size(0);
@@ -66,15 +66,27 @@ torch::Tensor runKnn(const torch::Tensor& tree_points,
 
   // Create our results tensor on CUDA
   auto int_opts = query_points.options().dtype(torch::kInt32);
-  torch::Tensor results_indices = torch::full({numQueryPoints}, -1, int_opts);
+  torch::Tensor results_indices =
+      torch::full({numQueryPoints, K}, -1, int_opts);
   int* results_ptr = reinterpret_cast<int*>(results_indices.data_ptr());
 
-  // Run our KNN Kernel
+  float3 upperBounds = tree.bounds.upper;
+  float3 lowerBounds = tree.bounds.upper;
+  CUKD_CUDA_SYNC_CHECK();
+  // Determine the maxRadius to query (bounding box len) so that we know for a
+  // fact we'll never miss a KNN query
+  float xDist = tree.bounds.upper.x - tree.bounds.lower.x;
+  float yDist = tree.bounds.upper.y - tree.bounds.lower.y;
+  float zDist = tree.bounds.upper.z - tree.bounds.lower.z;
+  float maxRadius = sqrt(xDist * xDist + yDist * yDist + zDist * zDist) +
+                    0.001;  // small bias value
+
+  // Run our KNN Kernel (using custom radius if specified)
   int threadsPerBlock = 1024;
   int numBlocks = (numQueryPoints + threadsPerBlock - 1) / threadsPerBlock;
-  int K = 1;  // nearest-neighbor
-  KnnKernel<<<numBlocks, threadsPerBlock>>>(query_points_ptr, numQueryPoints,
-                                            tree, results_ptr, K, radius);
+  KnnKernel<<<numBlocks, threadsPerBlock>>>(
+      query_points_ptr, numQueryPoints, tree, results_ptr, K,
+      radius.has_value() ? radius.value() : maxRadius);
   cudaDeviceSynchronize();
 
   // Clean up and get rid of our tree
