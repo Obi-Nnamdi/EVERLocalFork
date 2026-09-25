@@ -28,13 +28,13 @@ import sys
 from tqdm import tqdm
 
 import torch
-from simple_knn._C import distIndexQ
 
 from pathlib import Path
 import os
 
 from typing import cast, TypedDict
 
+from cukd_py import run_knn
 
 # Class for the returned cache dictionary
 class BRDFCacheDict(TypedDict):
@@ -71,7 +71,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("--detect_anomaly", action="store_true", default=False)
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--caching_batch_size", type=int, default=1000, help="The batch size to use when computing the mapping from the incoming light probe to all camera images.")
+    parser.add_argument(
+        "--caching_batch_size",
+        type=int,
+        default=1000,
+        help="The batch size to use when computing the mapping from the incoming light probe to all camera images.",
+    )
     parser.add_argument(
         "--incoming_light_batch_size",
         type=int,
@@ -287,9 +292,12 @@ if __name__ == "__main__":
         collapsed_point_cloud, probe_query_batch_size, dim=0
     )  # List of (batch_size, 3)
 
-    min_distances = torch.empty(0,).cuda()
+    min_distances = torch.empty(
+        0,
+    ).cuda()
     closest_points = torch.empty(0).cuda()
 
+    torch.cuda.synchronize()
     start_time = time.process_time()
 
     P = probe_point_xyz.size(0)
@@ -318,47 +326,46 @@ if __name__ == "__main__":
         min_distances = torch.cat([min_distances, values])
         closest_points = torch.cat([closest_points, closest_indices])
 
+    torch.cuda.synchronize()
     print(f"Time Elapsed for basic method: {time.process_time() - start_time}s")
 
-    # Complex Method
-    all_pc_indices = torch.arange(
-        collapsed_point_cloud.size(0), device="cuda:0", dtype=torch.int32
-    )
-    # Can we run this problem using the constraints we have on int32 (no index would be greater than max value?)
-    assert all_pc_indices.numel() < torch.iinfo(torch.int32).max
-    k = 1
+    # Can we run this problem using the constraints we have on int32 (no returned index would be greater than max value?)
+    assert probe_point_xyz.size(0) < torch.iinfo(torch.int32).max
 
+    torch.cuda.synchronize()
     start_time = time.process_time()
-    returned_dists, returned_indices = distIndexQ(
-        collapsed_point_cloud, all_pc_indices, rand_points.int().cuda(), k
-    )  # two tensors of shape (P,)
+
+    k = 1  # Simple nearest neighbor
+    upper_bounds, _ = torch.max(collapsed_point_cloud, dim=0)  # (3,)
+    lower_bounds, _ = torch.min(collapsed_point_cloud, dim=0)  # (3,)
+
+    # Conservative estimate to make sure there are no missed KNN queries
+    max_radius = torch.norm(upper_bounds - lower_bounds, p=2).item()
+
+    # TODO: Rename to run_nearest_neighbor
+    returned_indices = run_knn(
+        probe_point_xyz, collapsed_point_cloud, k, radius=max_radius
+    ).ravel()  # (P,)
+
+    assert not torch.any(
+        returned_indices == -1
+    ).item()  # Make sure we have a result for everything
+    torch.cuda.synchronize()
     print(f"Time Elapsed for complex method: {time.process_time() - start_time}s")
 
-    # All returned indices are in the form of the regular point cloud. (we know any point we get is in rand_indices)
-    # Convert returned indices back into their respective probe point using a sparse tensor
-    # TODO: Could also modify the point cloud to move randomly chosen indices to the front but it would mess up other things I think
-    rand_points_indices = torch.arange(rand_points.size(0), device="cuda:0")
-    rand_points_lookup_tensor = torch.sparse_coo_tensor(
-        rand_points[None, :],
-        rand_points_indices,
-        device="cuda:0",  # sparse tensor indices are (1, P)
-    ).to_dense()
+    print(f"{torch.sum(closest_points - returned_indices) = }")
 
-    converted_indices = rand_points_lookup_tensor[returned_indices]
-    print(f"{rand_points_lookup_tensor = }")
-    print(f"{converted_indices = }")
-
-    print(f"{returned_dists = }")
     print(f"{returned_indices = }")
-    print(f"{torch.mean(returned_dists) = }")
 
     print("Incoming Light Probe Statistics:")
     print(f"{torch.mean(min_distances) = }")
     print(f"{closest_points = }")
 
     # Our closest points tensor should now be reshaped back to its more-structured (N, H, W, 1) shape and then saved out
-    closest_points = closest_points.view(num_cameras, global_image_height, global_image_width, 1)
-    closest_points = closest_points.permute(0, 3, 1, 2) # (N, 1, H, W)
+    closest_points = closest_points.view(
+        num_cameras, global_image_height, global_image_width, 1
+    )
+    closest_points = closest_points.permute(0, 3, 1, 2)  # (N, 1, H, W)
 
     light_probe_query_tensor[:] = closest_points.cpu()
 
