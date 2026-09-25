@@ -1,5 +1,6 @@
 # Use a prelim base image that's just built to only have ever code
-FROM obinnamdi/ever:v1.5_prelim_image
+# Usage: docker build  --rm -f 'Dockerfile_splinetracer_only' -t 'obinnamdi/ever:v1.6_full_build' '.'
+FROM obinnamdi/ever:v1.6_prelim_image
 
 # Copy ever code again to reflect code changes
 # chown flag is needed to prevent VSCode from breaking edit permissions
@@ -8,6 +9,9 @@ COPY ever /ever_training/ever
 # Uncomment if you want to update the OptiX version:
 # RUN rm -rf /opt/OptiX_7.4
 # COPY optix_9/ /opt/OptiX_7.4
+ENV CMAKE_CUDA_ARCHITECTURES="60;61;70;75;80;86;90"
+RUN source activate ever && \
+    bash install_cukd_py.bash
 
 RUN source activate ever && \
     rm -rf ever/build && \
