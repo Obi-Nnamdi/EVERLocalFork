@@ -15,5 +15,6 @@ cd fast_knn_cu || return
 
 # Pip install with a specific architecture
 export CMAKE_CUDA_ARCHITECTURES="60"
-pip install .
+export PATH="/home/vscode/.local/bin/:$PATH"
+pip install --no-build-isolation .
 cd ../..

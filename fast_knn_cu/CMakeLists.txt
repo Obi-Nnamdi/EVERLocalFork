@@ -84,7 +84,8 @@ target_link_libraries(fast_cu_knn PRIVATE ${CMAKE_CUDA_RUNTIME_LIBRARY} ${TORCH_
 # Support pip building (Adapted from https://www.roma1.infn.it/~rovigatl/posts/pybind_cmake/)
 # Create a staging directory for the Python package
 set(PYTHON_BUILD_BASE_DIR "${CMAKE_BINARY_DIR}/python")
-set(FAST_CU_KNN_PACKAGE_DIR "${PYTHON_BUILD_BASE_DIR}/fast_cu_knn")
+set(STAGING_PACKAGE_NAME "cukd_py")
+set(FAST_CU_KNN_PACKAGE_DIR "${PYTHON_BUILD_BASE_DIR}/${STAGING_PACKAGE_NAME}")
 # Make sure the directory exists
 file(MAKE_DIRECTORY ${FAST_CU_KNN_PACKAGE_DIR})
 
@@ -101,5 +102,22 @@ configure_file(__init__.py ${FAST_CU_KNN_PACKAGE_DIR}/__init__.py COPYONLY)
 # Are we installing using pip + scikit-build?
 if(SKBUILD)
   # install the package to a location where scikit-build can find it
-  install(DIRECTORY ${FAST_CU_KNN_PACKAGE_DIR}/ DESTINATION cukd_py)
+  set(PIP_PACKAGE_NAME ${STAGING_PACKAGE_NAME})
+  install(DIRECTORY ${FAST_CU_KNN_PACKAGE_DIR}/ DESTINATION ${PIP_PACKAGE_NAME})
+
+  find_program(STUBGEN_PATH NAMES pybind11-stubgen)
+
+  # Put our newly generated module on the pythnon path and generate stubs.
+  if(STUBGEN_PATH)
+      message(STATUS "Stubgen executable found at: ${STUBGEN_PATH}")
+      # Add pip package to python path to make it readable by stubgen
+      # set(ENV{PYTHONPATH} "${PYTHON_BUILD_BASE_DIR}")
+      add_custom_command(
+      TARGET fast_cu_knn POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E env PYTHONPATH=${PYTHON_BUILD_BASE_DIR} ${STUBGEN_PATH} ${STAGING_PACKAGE_NAME} -o ${PYTHON_BUILD_BASE_DIR}
+      COMMENT "generating python stubs"
+      VERBATIM)
+  else()
+      message(WARNING "Stubgen Executable could not be found on the PATH. No typing stubs (.pyi files) will be generated.")
+  endif()
 endif()
