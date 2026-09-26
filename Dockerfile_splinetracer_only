@@ -1,6 +1,6 @@
 # Use a prelim base image that's just built to only have ever code
 # Usage: docker build  --rm -f 'Dockerfile_splinetracer_only' -t 'obinnamdi/ever:v1.6_full_build' '.'
-FROM obinnamdi/ever:v1.6_prelim_image
+FROM obinnamdi/ever:v1.6_prelim_image AS base
 
 # Copy ever code again to reflect code changes
 # chown flag is needed to prevent VSCode from breaking edit permissions
@@ -17,8 +17,7 @@ RUN source activate ever && \
 # Build fast_knn_cu extension
 COPY fast_knn_cu /ever_training/fast_knn_cu
 ENV CMAKE_CUDA_ARCHITECTURES="60;61;70;75;80;86;90"
-RUN source activate ever && \
-    bash install_cukd_py.bash
+RUN source activate ever && pip install --no-build-isolation ./fast_knn_cu
 
 # Unset LD_LIBRARY_PATH to avoid problems with slangtorch later
 ENV LD_LIBRARY_PATH=
@@ -29,6 +28,8 @@ EXPOSE 6009
 # By default, just start a shell in the 'ever' environment
 CMD ["/bin/bash", "-c", "source activate ever && exec bash"]
 
+
+FROM base AS vscode-stage
 # RUN apt update && apt install sudo
 
 # Add user for non-root VSCode DevContainer editing:
