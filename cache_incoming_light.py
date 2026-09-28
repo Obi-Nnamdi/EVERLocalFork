@@ -35,7 +35,7 @@ import os
 
 from typing import cast, TypedDict
 
-from cukd_py import run_knn
+from cukd_py import run_knn, run_knn_stack_free
 
 # Class for the returned cache dictionary
 class BRDFCacheDict(TypedDict):
@@ -360,9 +360,15 @@ if __name__ == "__main__":
     max_radius = torch.norm(upper_bounds - lower_bounds, p=2).item()
 
     # TODO: Rename to run_nearest_neighbor
-    returned_closest_indices = run_knn(
-        probe_point_xyz, collapsed_point_cloud, k, radius=max_radius
-    ).ravel()  # (P,)
+    # returned_closest_indices = run_knn(
+    #     probe_point_xyz, collapsed_point_cloud, k, radius=max_radius
+    # ).ravel()  # (P,)
+
+    print(f"{probe_point_xyz = }")
+    returned_closest_indices = run_knn_stack_free(
+        probe_point_xyz, collapsed_point_cloud, k, max_radius
+    ).ravel()
+    print(f"{probe_point_xyz = }")
 
     assert not torch.any(
         returned_closest_indices == -1

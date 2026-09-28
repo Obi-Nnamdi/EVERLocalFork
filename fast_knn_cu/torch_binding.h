@@ -7,3 +7,7 @@
 torch::Tensor runKnn(const torch::Tensor& tree_points,
                      const torch::Tensor& query_points, const int K,
                      const std::optional<float> radius);
+
+torch::Tensor runKnnStackFree(const torch::Tensor& tree_points,
+                              const torch::Tensor& query_points, const int K,
+                              const float radius);

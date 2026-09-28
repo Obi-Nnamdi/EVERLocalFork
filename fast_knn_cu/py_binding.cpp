@@ -32,4 +32,21 @@ Returns
 result_indices : (Q x K) tensor
       )pbdoc",
         "tree_points"_a, "query_points"_a, "k"_a, "radius"_a = py::none());
+  m.def("run_knn_stack_free", runKnnStackFree,
+        R"pbdoc(
+Run cudaKD to generate a KD tree from tree_points and query it with query_points to find the K nearest neighbors.
+Stack Free version that should not require a significant memory overhead.
+
+Parameters
+----------
+tree_points : (T x 3) tensor
+query_points : (Q x 3) tensor
+k : int
+radius : float (specified cut-off radius)
+
+Returns
+-------
+result_indices : (Q x K) tensor
+      )pbdoc",
+        "tree_points"_a, "query_points"_a, "k"_a, "radius"_a);
 }
