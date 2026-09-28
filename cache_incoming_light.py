@@ -353,7 +353,7 @@ if __name__ == "__main__":
     torch.cuda.synchronize()
     print(f"Time Elapsed for complex method: {time.process_time() - start_time}s")
 
-    print(f"{torch.sum(closest_points - returned_indices) = }")
+    print(f"{torch.sum(closest_points != returned_indices) = }")
 
     print(f"{returned_indices = }")
 
