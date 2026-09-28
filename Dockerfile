@@ -1,5 +1,5 @@
 # Use an NVIDIA CUDA base image that includes development libraries
-FROM nvidia/cuda:12.2.0-devel-ubuntu22.04
+FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS prelim-base
 
 # Non-interactive mode for apt-get
 ENV DEBIAN_FRONTEND=noninteractive
@@ -132,21 +132,24 @@ RUN source activate ever && \
     bash install_sibr_viewer.bash
 
 ## PART 2 BUILD CUTOFF:
-# # Copy again to reflect code changes
-# COPY . /ever_training
+FROM prelim-base AS final-image
 
-# # Comment out everything below this to build the prelim image:
-    
-# RUN source activate ever && \
-#     rm -rf ever/build && \
-#     bash install_splinetracer.bash
+RUN source activate ever && \
+    rm -rf ever/build && \
+    bash install_splinetracer.bash
 
-# # Unset LD_LIBRARY_PATH to avoid problems with slangtorch later
-# ENV LD_LIBRARY_PATH=
+# Build fast_knn_cu extension
+COPY fast_knn_cu /ever_training/fast_knn_cu
+ENV CMAKE_CUDA_ARCHITECTURES="60;61;70;75;80;86;90"
+RUN source activate ever && pip install --no-build-isolation ./fast_knn_cu
 
-# # Expose any ports needed for training or viewer
-# EXPOSE 6009
 
-# # By default, just start a shell in the 'ever' environment
-# CMD ["/bin/bash", "-c", "source activate ever && exec bash"]
+# Unset LD_LIBRARY_PATH to avoid problems with slangtorch later
+ENV LD_LIBRARY_PATH=
+
+# Expose any ports needed for training or viewer
+EXPOSE 6009
+
+# By default, just start a shell in the 'ever' environment
+CMD ["/bin/bash", "-c", "source activate ever && exec bash"]
 
