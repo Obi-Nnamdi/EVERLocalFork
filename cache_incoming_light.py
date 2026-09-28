@@ -1,6 +1,7 @@
 """
 Example Usage:
 python cache_incoming_light.py -m /data/trained_model -s /data/scene --preview_factor=64 --incoming_light_divisions=8 --outgoing_light_divisions=4 --num_probe_points=40
+python cache_incoming_light.py -m /data/trained_model -s /data/scene --preview_factor=4 --incoming_light_divisions=8 --outgoing_light_divisions=4 --num_probe_points=100_000
 """
 
 import time
@@ -347,9 +348,6 @@ if __name__ == "__main__":
     # Get how close we are to each of the other points
     # Compute nearest neighbor for the point clouds a batch at a time to save memory.
     probe_query_batch_size = cast(int, args.caching_batch_size)
-    min_distances, closest_points = naive_calculate_nearest_neighbor(
-        collapsed_point_cloud, probe_point_xyz, probe_query_batch_size
-    )
 
     # Can we run this problem using the constraints we have on int32 (no returned index would be greater than max value?)
     assert probe_point_xyz.size(0) < torch.iinfo(torch.int32).max
@@ -362,24 +360,20 @@ if __name__ == "__main__":
     max_radius = torch.norm(upper_bounds - lower_bounds, p=2).item()
 
     # TODO: Rename to run_nearest_neighbor
-    returned_indices = run_knn(
+    returned_closest_indices = run_knn(
         probe_point_xyz, collapsed_point_cloud, k, radius=max_radius
     ).ravel()  # (P,)
 
     assert not torch.any(
-        returned_indices == -1
+        returned_closest_indices == -1
     ).item()  # Make sure we have a result for everything
 
-    print(f"{torch.sum(closest_points != returned_indices) = }")
-
-    print(f"{returned_indices = }")
+    print(f"{returned_closest_indices = }")
 
     print("Incoming Light Probe Statistics:")
-    print(f"{torch.mean(min_distances) = }")
-    print(f"{closest_points = }")
 
     # Our closest points tensor should now be reshaped back to its more-structured (N, H, W, 1) shape and then saved out
-    closest_points = closest_points.view(
+    closest_points = returned_closest_indices.view(
         num_cameras, global_image_height, global_image_width, 1
     )
     closest_points = closest_points.permute(0, 3, 1, 2)  # (N, 1, H, W)
