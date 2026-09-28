@@ -56,6 +56,65 @@ class BRDFCacheDict(TypedDict):
     light_probe_query: torch.Tensor  # (N, 1, H, W)
 
 
+def naive_calculate_nearest_neighbor(
+    querying_points: torch.Tensor,
+    neighbor_points: torch.Tensor,
+    query_batch_size: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Use a naive PyTorch method (calculate distance to all points) to find the
+    closest neighbor for each point from querying_points to the points in neighbor_points.
+    Proceeds using a batch size of query_batch_size.
+
+    Parameters:
+    ----------------
+    querying_points: Q x 3
+
+    neighbor_points: N x 3
+
+    Returns:
+    ----------------
+    min_distances: (Q,)
+
+    closest_points: (Q,)
+    """
+    point_cloud_batches = torch.split(
+        querying_points, query_batch_size, dim=0
+    )  # List of (batch_size, 3)
+
+    min_distances = torch.empty(
+        0,
+    ).cuda()
+    closest_points = torch.empty(0).cuda()
+
+    P = neighbor_points.size(0)
+    for i, pc_batch in tqdm(
+        enumerate(point_cloud_batches), total=len(point_cloud_batches)
+    ):
+        # pc_batch has shape (B, 3)
+        B = pc_batch.size(0)
+        # Expand the point cloud and probe points to be the same size: (B, P, 3), then reduce the last dimension and take topKs.
+        expanded_pc_batch = pc_batch[:, None, :].expand(
+            -1, P, -1
+        )  # (B, P, 3) - add a singleton dimension then expand
+        expanded_probe_batch = neighbor_points[None, :, :].expand(
+            B, -1, -1
+        )  # (B, P, 3)
+        # Get the distances from each point to a probe point
+        all_pair_distances = torch.norm(
+            expanded_pc_batch - expanded_probe_batch, p=2, dim=-1
+        )  # (B, P)
+        # Get the closest points via min
+        values, closest_indices = torch.min(
+            all_pair_distances, dim=1
+        )  # Both tensors (B,)
+
+        # Build our result
+        min_distances = torch.cat([min_distances, values])
+        closest_points = torch.cat([closest_points, closest_indices])
+    return min_distances, closest_points
+
+
 if __name__ == "__main__":
     # Set up command line argument parser
     parser = ArgumentParser(description="Manual Renderer Parameters")
@@ -288,54 +347,14 @@ if __name__ == "__main__":
     # Get how close we are to each of the other points
     # Compute nearest neighbor for the point clouds a batch at a time to save memory.
     probe_query_batch_size = cast(int, args.caching_batch_size)
-    point_cloud_batches = torch.split(
-        collapsed_point_cloud, probe_query_batch_size, dim=0
-    )  # List of (batch_size, 3)
-
-    min_distances = torch.empty(
-        0,
-    ).cuda()
-    closest_points = torch.empty(0).cuda()
-
-    torch.cuda.synchronize()
-    start_time = time.process_time()
-
-    P = probe_point_xyz.size(0)
-    for i, pc_batch in tqdm(
-        enumerate(point_cloud_batches), total=len(point_cloud_batches)
-    ):
-        # pc_batch has shape (B, 3)
-        B = pc_batch.size(0)
-        # Expand the point cloud and probe points to be the same size: (B, P, 3), then reduce the last dimension and take topKs.
-        expanded_pc_batch = pc_batch[:, None, :].expand(
-            -1, P, -1
-        )  # (B, P, 3) - add a singleton dimension then expand
-        expanded_probe_batch = probe_point_xyz[None, :, :].expand(
-            B, -1, -1
-        )  # (B, P, 3)
-        # Get the distances from each point to a probe point
-        all_pair_distances = torch.norm(
-            expanded_pc_batch - expanded_probe_batch, p=2, dim=-1
-        )  # (B, P)
-        # Get the closest points via min
-        values, closest_indices = torch.min(
-            all_pair_distances, dim=1
-        )  # Both tensors (B,)
-
-        # Build our result
-        min_distances = torch.cat([min_distances, values])
-        closest_points = torch.cat([closest_points, closest_indices])
-
-    torch.cuda.synchronize()
-    print(f"Time Elapsed for basic method: {time.process_time() - start_time}s")
+    min_distances, closest_points = naive_calculate_nearest_neighbor(
+        collapsed_point_cloud, probe_point_xyz, probe_query_batch_size
+    )
 
     # Can we run this problem using the constraints we have on int32 (no returned index would be greater than max value?)
     assert probe_point_xyz.size(0) < torch.iinfo(torch.int32).max
 
-    torch.cuda.synchronize()
-    start_time = time.process_time()
-
-    k = 1  # Simple nearest neighbor
+    k = 1  # Only querying nearest neighbor
     upper_bounds, _ = torch.max(collapsed_point_cloud, dim=0)  # (3,)
     lower_bounds, _ = torch.min(collapsed_point_cloud, dim=0)  # (3,)
 
@@ -350,8 +369,6 @@ if __name__ == "__main__":
     assert not torch.any(
         returned_indices == -1
     ).item()  # Make sure we have a result for everything
-    torch.cuda.synchronize()
-    print(f"Time Elapsed for complex method: {time.process_time() - start_time}s")
 
     print(f"{torch.sum(closest_points != returned_indices) = }")
 
