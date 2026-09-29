@@ -359,16 +359,13 @@ if __name__ == "__main__":
     # Conservative estimate to make sure there are no missed KNN queries
     max_radius = torch.norm(upper_bounds - lower_bounds, p=2).item()
 
-    # TODO: Rename to run_nearest_neighbor
-    # returned_closest_indices = run_knn(
+    # returned_closest_indices_with_stack = run_knn(
     #     probe_point_xyz, collapsed_point_cloud, k, radius=max_radius
     # ).ravel()  # (P,)
 
-    print(f"{probe_point_xyz = }")
     returned_closest_indices = run_knn_stack_free(
         probe_point_xyz, collapsed_point_cloud, k, max_radius
     ).ravel()
-    print(f"{probe_point_xyz = }")
 
     assert not torch.any(
         returned_closest_indices == -1

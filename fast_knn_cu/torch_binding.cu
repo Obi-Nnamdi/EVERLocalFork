@@ -86,8 +86,8 @@ __global__ void KnnKernelStackFree(const float3* d_queries, int numQueries,
   // -1 returned indices means no match
   for (int i = 0; i < k; i++) {
     int tree_point_ID = result.get_pointID(i);
-    // Find the point and report its original index (casting float -> int)
-    int ID = tree_point_ID < 0 ? -1 : (int)tree[tree_point_ID].w;
+    // Find the point and report its original index (bit casting float -> int)
+    int ID = tree_point_ID < 0 ? -1 : __float_as_int(tree[tree_point_ID].w);
     d_results[tid * k + i] = ID;
   }
 }
@@ -158,10 +158,11 @@ torch::Tensor runKnnStackFree(const torch::Tensor& tree_points,
   const int64_t numQueryPoints = query_points.size(0);
 
   // Create an additional index dimension for the tree_points tensor
-  // (As a Float32 tensor)
-  torch::Tensor index_tensor =
-      torch::arange(numTreePoints, tree_points.options())
-          .view({numTreePoints, 1});
+  // then bitcast it to a float32 (casting is undone in KnnKernelStackFree)
+  auto int_opts = query_points.options().dtype(torch::kInt32);
+  torch::Tensor index_tensor = torch::arange(numTreePoints, int_opts)
+                                   .view({numTreePoints, 1})
+                                   .view(torch::kFloat32);
 
   // Create a new tensor with the original points and indices together
   torch::Tensor points_and_index_tensor =
@@ -180,7 +181,6 @@ torch::Tensor runKnnStackFree(const torch::Tensor& tree_points,
   CUKD_CUDA_SYNC_CHECK();
 
   // Create our results tensor on CUDA
-  auto int_opts = query_points.options().dtype(torch::kInt32);
   torch::Tensor results_indices =
       torch::full({numQueryPoints, K}, -1, int_opts);
   int* results_ptr = reinterpret_cast<int*>(results_indices.data_ptr());
