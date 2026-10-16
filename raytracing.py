@@ -12,7 +12,7 @@ import cv2
 from utils.general_utils import safe_state
 from typing import Optional
 import sys
-
+import math
 
 from gaussian_renderer.fast_renderer import FastRenderer
 
@@ -25,9 +25,6 @@ import os
 import numpy as np
 
 # Graphing
-import matplotlib
-
-matplotlib.use("Agg")  # headless mode
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 
@@ -325,6 +322,55 @@ def generate_spherical_rays(
     return rays_d, rays_o
 
 
+# Constants for evenly spaced sphere points
+GOLDEN_RATIO = (math.sqrt(5.0) + 1.0) / 2.0
+GOLDEN_ANGLE = (1.0 - 1.0 / GOLDEN_RATIO) * (2 * math.pi)
+
+
+def generate_evenly_spaced_sphere_points(
+    num_points: int, radius: float = 1.0, device: torch.device | str = "cuda:0"
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Generate (approximately) evenly distributed points on the surface of a sphere.
+
+    Returns:
+        sphere_points: (num_points, 3) of XYZ coordinates
+        sphere_coordinates: (num_points, 2) of Lat (theta, 0->2pi) and Lon (phi, 0->pi) coordinates.
+
+    Adapted from https://medium.com/@gregking917/evenly-distributing-points-on-a-sphere-99903c7a21b6
+    and https://matplotlib.org/stable/gallery/mplot3d/surface3d_2.html
+    """
+    point_indices = torch.arange(num_points, dtype=torch.float32, device=device)
+    lon = torch.acos(
+        -1 + (2 * point_indices + 1.0) / num_points
+    )  # phi (azimuthal) [0 -> pi]
+    lat = (GOLDEN_ANGLE * point_indices) % (2 * torch.pi)  # theta (polar) [0 -> 2pi]
+
+    sin_lat = torch.sin(lat)
+    cos_lat = torch.cos(lat)
+
+    sin_lon = torch.sin(lon)
+    cos_lon = torch.cos(lon)
+
+    # Asin method:
+    # lon = torch.asin( -1 + (2 * point_indices + 1.0) / num_points) [-pi/2 -> pi/2]
+    # x = cos_lat * cos_lon
+    # y = sin_lat * cos_lon
+    # z = sin_lon
+
+    # Acos
+    x = cos_lat * sin_lon
+    y = sin_lat * sin_lon
+    z = cos_lon
+
+    sphere_directions = torch.vstack((x, y, z)).T
+    sphere_points = radius * sphere_directions
+
+    sphere_coordinates = torch.vstack((lat, lon)).T
+
+    return sphere_points, sphere_coordinates
+
+
 def save_rgb_image(
     image: torch.Tensor, img_path: Path, resized_dims: Optional[tuple[int, int]] = None
 ):
@@ -548,6 +594,17 @@ if __name__ == "__main__":
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     # args.checkpoint_iterations.append(args.iterations)
+
+    print(f"Testing Sphere Point Generation:")
+    points, coordinates = generate_evenly_spaced_sphere_points(300)
+    points = points.cpu()
+
+    # Plot sphere points to check how evenly spaced they are
+    fig = plt.figure()
+    ax = fig.add_subplot(projection="3d")
+
+    ax.scatter(points[:, 0], points[:, 1], points[:, 2])
+    plt.show()
 
     print("Optimizing " + args.model_path)
 
