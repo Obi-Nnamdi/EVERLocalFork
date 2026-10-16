@@ -33,6 +33,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcgal-dev \
     libglm-dev \
     mesa-utils \
+    python3-tk \
+    tcl-dev \
+    tk-dev \
+    libx11-6 \
+    x11-apps \
     && rm -rf /var/lib/apt/lists/*
 
 # ------------------------------------------------------
