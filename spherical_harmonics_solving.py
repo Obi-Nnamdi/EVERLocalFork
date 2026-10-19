@@ -16,7 +16,10 @@ def normalization_constant_sh_coeff(n: int, m: int) -> float:
         denominator = 4 * math.pi * math.factorial(n + abs(m))
         return ((-1) ** (m)) * math.sqrt(2) * math.sqrt(numerator / denominator)
 
-def real_spherical_harmonics(n: int, m: int, theta: float | torch.Tensor = 0, phi: float | torch.Tensor = 0) -> np.ndarray:
+
+def real_spherical_harmonics(
+    n: int, m: int, theta: torch.Tensor, phi: torch.Tensor
+) -> np.ndarray:
     """
 
     Parameters:
@@ -29,6 +32,9 @@ def real_spherical_harmonics(n: int, m: int, theta: float | torch.Tensor = 0, ph
     https://peakd.com/hive-128780/@mes/220d6572
     """
     assert abs(m) <= n
+    theta = theta.cpu()
+    phi = phi.cpu()
+
     y_nm_func = lambda n, m: sph_harm_y(n, m, theta, phi)
 
     # Define real-valued spherical harmonics according to formula
@@ -51,6 +57,7 @@ def real_spherical_harmonics(n: int, m: int, theta: float | torch.Tensor = 0, ph
         inner_factor = y_nm_func(n, abs_m) - neg_one_abs_power * y_nm_func(n, -abs_m)
 
         return (outside_factor * inner_factor).real
+
 
 def generate_SH_coeff_matrices(max_n: int, theta: torch.Tensor, phi: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """
@@ -111,34 +118,62 @@ def solve_for_real_SH_coeffs(observation_vals: torch.Tensor, B_matrix: torch.Ten
     # Remove the extra stuff created for the regularization
     return solutions[:n]
 
-if __name__ == "__main__":
-    # Implement this:
-    # https://kvttt.github.io/files/Spherical_Harmonics_Fitting.pdf#page=1.83
-    # SH_C0 = sph_harm_y(0, 0, 0, 0, diff_n=0).real.item()
-    # SH_C1 = sph_harm_y(1, 0, 0, 0, diff_n=0).item()
-    SH_C0 = real_spherical_harmonics(0, 0)
-    SH_C1 = real_spherical_harmonics(1, 0)
-    SH_C2 = real_spherical_harmonics(2, 0) / 2 # why divided by 2?
-    # SH_C2_1 = real_spherical_harmonic_coeff(2, -1) # why divided by 2?
-    # SH_C2_1 =  sph_legendre_p(2,-2, math.pi / 4) # why divided by 2?
-    # SH_C2_1 =  normalization_constant_sh_coeff(2, 0) # why divided by 2?
 
+def fit_SH_to_data(
+    observations: torch.Tensor,
+    theta_vals: torch.Tensor,
+    phi_vals: torch.Tensor,
+    lambda_val: float,
+    max_SH_degree: int,
+) -> torch.Tensor:
+    """
+    Fit SHs to data captured at various (theta, phi) angles.
+
+    Parameters:
+        observations: (n, k) vector, where each row is a new observation.
+        theta_vals: (n,) vector of theta values for each observation
+        phi_vals: (n,) vector of phi values for each observation
+        lambda: float denoting amount of regularization to put on coeffs.
+        max_SH_degree: maximum degree of Spherical Harmonics to fit. All spherical harmonic orders are used.
+
+    Returns:
+
+
+    """
+    B_matrix, L_matrix = generate_SH_coeff_matrices(max_SH_degree, theta_vals, phi_vals)
+
+    B_matrix = B_matrix.to(observations.device)
+    L_matrix = L_matrix.to(observations.device)
+
+    result = solve_for_real_SH_coeffs(observations, B_matrix, L_matrix, lambda_val)
+    return result
+
+
+if __name__ == "__main__":
     torch.manual_seed(0)
 
     num_theta_vals = 100
-    theta_vals = torch.rand((num_theta_vals, )) * torch.pi * 2
-    phi_vals = torch.rand((num_theta_vals, )) * torch.pi * 2
+    theta_vals = torch.rand((num_theta_vals,)) * torch.pi * 2
+    phi_vals = torch.rand((num_theta_vals,)) * torch.pi * 2
 
-    dummy_observation_vals = torch.atleast_2d(2 * torch.cos(theta_vals) + 4 * torch.sin(phi_vals)).T
+    dummy_observation_vals = torch.atleast_2d(
+        2 * torch.cos(theta_vals) + 4 * torch.sin(phi_vals)
+    ).T.expand(
+        -1, 3
+    )  # (dummy RGB)
     # dummy_observation_vals = torch.ones_like(dummy_observation_vals) * 10
     lambda_val = 10
-    
-    B_matrix, L_matrix =  generate_SH_coeff_matrices(3, theta_vals, phi_vals)
 
-    result = solve_for_real_SH_coeffs(dummy_observation_vals, B_matrix, L_matrix, lambda_val)
-
+    max_n = 2
+    result = fit_SH_to_data(
+        dummy_observation_vals.cuda(),
+        theta_vals.cuda(),
+        phi_vals.cuda(),
+        lambda_val,
+        max_n,
+    )
 
     print(f"{result = }")
 
-    residuals = B_matrix @ result - dummy_observation_vals
-    print(f"{torch.sum(torch.pow(residuals, 2)) = }")
+    # residuals = B_matrix @ result - dummy_observation_vals
+    # print(f"{torch.sum(torch.pow(residuals, 2)) = }")
