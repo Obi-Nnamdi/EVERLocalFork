@@ -199,6 +199,8 @@ torch::Tensor runKnnStackFree(const torch::Tensor& tree_points,
   cudaFree(world_bounds);
   // Free unneeded allocated tensors
   // https://discuss.pytorch.org/t/how-to-manually-delete-free-a-tensor-in-aten/64153/3
+  // TODO: Add a function parameter that allows returning of the actual tree
+  // tensor for future queries
   points_and_index_tensor = torch::Tensor();
   index_tensor = torch::Tensor();
 
