@@ -100,8 +100,9 @@ def solve_for_real_SH_coeffs(observation_vals: torch.Tensor, B_matrix: torch.Ten
         lambda: float denoting amount of regularization to put on coeffs.
 
     Returns:
-        solutions: (n, k)
+        solutions: (d, k)
     """
+
     assert lambda_val >= 0
     lambda_L_mat = math.sqrt(lambda_val) * L_matrix
     stacked_BL_mat = torch.cat([B_matrix, lambda_L_mat], dim=0) # (n + d, d)
@@ -110,7 +111,9 @@ def solve_for_real_SH_coeffs(observation_vals: torch.Tensor, B_matrix: torch.Ten
     n = B_matrix.size(0)
     zero_padding = torch.zeros((d, observation_vals.size(1)), dtype=observation_vals.dtype, device=observation_vals.device)
 
-    padded_observations = torch.cat([observation_vals, zero_padding], dim=0) # (n + d, 1)
+    padded_observations = torch.cat(
+        [observation_vals, zero_padding], dim=0
+    )  # (n + d, k)
 
     # Solve system of eq: min_x||Ax - b||
     solutions, _, _, _ = torch.linalg.lstsq(stacked_BL_mat, padded_observations)
