@@ -1,7 +1,7 @@
 """
 Example Usage:
-python cache_incoming_light.py -m /data/trained_model -s /data/scene --preview_factor=64 --incoming_light_divisions=8 --outgoing_light_divisions=4 --num_probe_points=40
-python cache_incoming_light.py -m /data/trained_model -s /data/scene --preview_factor=4 --incoming_light_divisions=8 --outgoing_light_divisions=4 --num_probe_points=100_000
+python cache_incoming_light.py -m /data/trained_model -s /data/scene --preview_factor=64 --incoming_light_points=400 --outgoing_light_points=20 --num_probe_points=40
+python cache_incoming_light.py -m /data/trained_model -s /data/scene --preview_factor=4 --incoming_light_points=8 --outgoing_light_points=20 --num_probe_points=100_000
 """
 
 import time
@@ -195,7 +195,7 @@ if __name__ == "__main__":
 
     # Calculate how big our incoming light features will be when input into our model.
     test_sphere_o, _ = generate_spherical_rays(
-        torch.zeros((3,)), brdf_args.incoming_light_divisions
+        torch.zeros((3,)), num_points=brdf_args.incoming_light_points
     )
     incoming_light_size = test_sphere_o.size(0)  # R dimension
 
@@ -315,7 +315,7 @@ if __name__ == "__main__":
             probe_batch,
             ever_renderer,
             tmin=brdf_args.incoming_light_tmin,
-            sphere_divisions=brdf_args.incoming_light_divisions,
+            num_incoming_points=brdf_args.incoming_light_points,
             fast=True,
             precompute_sh=False,
         )  # (P, R, 3)
@@ -327,7 +327,7 @@ if __name__ == "__main__":
         outgoing_light_colors, _, outgoing_light_dirs = gather_outgoing_light_at_points(
             probe_batch,
             ever_renderer,
-            sphere_divisions=brdf_args.outgoing_light_divisions,
+            num_outgoing_points=brdf_args.outgoing_light_points,
             ray_origin_offset_factor=brdf_args.outgoing_light_t_offset,
         )
         full_outgoing_light_colors = torch.cat(

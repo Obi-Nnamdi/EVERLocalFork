@@ -84,7 +84,7 @@ if __name__ == "__main__":
 
     # Calculate how big our incoming light features will be when input into our model.
     test_sphere_o, _ = generate_spherical_rays(
-        torch.zeros((3,)), incoming_light_sphere_divisions
+        torch.zeros((3,)), num_points=incoming_light_sphere_divisions
     )
     incoming_light_size = test_sphere_o.size(0) * 3  # N vectors that have [r, g, b]
 
@@ -140,15 +140,13 @@ if __name__ == "__main__":
     print("Calculating Incoming Light")
     start_time = time.process_time()
     # Querying Spherical Directions
-    incoming_light, _, incoming_light_dirs = (
-        gather_incoming_light_at_points(
-            xyz_map[(all_rows, all_cols)],
-            ever_renderer,
-            tmin=0.01,
-            sphere_divisions=incoming_light_sphere_divisions,
-            fast=True
-        )
-    ) # (N, R, 3) for each tensor
+    incoming_light, _, incoming_light_dirs = gather_incoming_light_at_points(
+        xyz_map[(all_rows, all_cols)],
+        ever_renderer,
+        tmin=0.01,
+        num_incoming_points=incoming_light_sphere_divisions,
+        fast=True,
+    )  # (N, R, 3) for each tensor
     print(f"Calculated Incoming Light in {time.process_time() - start_time:.2f}s")
 
     # Evaluate model for each point

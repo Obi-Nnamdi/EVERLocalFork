@@ -241,7 +241,7 @@ if __name__ == "__main__":
             all_points_xyz,
             ever_renderer,
             tmin=brdf_args.incoming_light_tmin,
-            sphere_divisions=brdf_args.incoming_light_divisions,
+            num_incoming_points=brdf_args.incoming_light_points,
             # TODO: Experiment with changing these parameters if I get bad incoming light values.
             fast=True,
             precompute_sh=False,
@@ -438,7 +438,7 @@ if __name__ == "__main__":
 
             # Generate the rays we're going to query our BRDF with (spherical rays)
             point_outgoing_dirs, _ = generate_spherical_rays(
-                torch.tensor([0.0, 0.0, 0.0]), brdf_args.incoming_light_divisions
+                torch.tensor([0.0, 0.0, 0.0]), brdf_args.incoming_light_points
             )
             point_outgoing_dirs = point_outgoing_dirs.cuda()  # (N, 3)
 

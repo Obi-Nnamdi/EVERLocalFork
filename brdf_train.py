@@ -1,6 +1,8 @@
 """
 Example Usage:
 python brdf_train.py -m /data/trained_model -s /data/scene --cache_evaluation_batch_size=200  --training_epochs=5 --cache_location=/data/trained_model/brdf_ever_cache/full_cache_dict.pt --detect_anomaly
+
+python brdf_train.py -m /data/trained_model -s /data/scene --cache_evaluation_batch_size=200  --training_epochs=5 --cache_location=/data/trained_model/brdf_ever_cache/full_cache_dict.pt --detect_anomaly --tensorboard_log_comment="diffuse_only_1_image"
 """
 
 from arguments import (
@@ -206,7 +208,7 @@ def report_visual_metrics_to_tensorboard(
 
     # Generate the rays we're going to query our BRDF with (spherical rays)
     point_outgoing_dirs, _ = generate_spherical_rays(
-        torch.tensor([0.0, 0.0, 0.0]), brdf_args.incoming_light_divisions
+        torch.tensor([0.0, 0.0, 0.0]), num_points=brdf_args.incoming_light_points
     )
     point_outgoing_dirs = point_outgoing_dirs.cuda()  # (N, 3)
 
@@ -282,7 +284,9 @@ if __name__ == "__main__":
     )  # NOTE: Lying to the type checker, but it's close enough.
 
     # Initialize system state (RNG)
-    safe_state(args.quiet)
+    safe_state(args.quiet)  # This is where timestamp printing also happens.
+    # torch.use_deterministic_algorithms(True)
+
     model_params: ModelParams = cast(ModelParams, lp.extract(args))
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
 
@@ -373,12 +377,23 @@ if __name__ == "__main__":
     rendered_images[:, 3] /= max_depth_val - min_depth_val
 
     # Build our full dataset
+    single_camera_debug = True
+
+    torch.manual_seed(0)
     training_dataset = TensorDataset(
         rendered_images,
         light_query_mapping,
         outgoing_directions,
         cameras_to_world_rotation,
     )
+
+    if single_camera_debug:
+        training_dataset = TensorDataset(
+            rendered_images[:1],
+            light_query_mapping[:1],
+            outgoing_directions[:1],
+            cameras_to_world_rotation[:1],
+        )
 
     training_dataloader = DataLoader(
         training_dataset, batch_size=brdf_args.cache_evaluation_batch_size, shuffle=True
@@ -505,9 +520,10 @@ if __name__ == "__main__":
             other_outgoing_directions_rendering_diff = (
                 total_outgoing_color_squared_diff / num_loss_cameras
             )
-            loss = torch.mean(
-                observed_rendering_diff + other_outgoing_directions_rendering_diff
-            )
+            # loss = torch.mean(
+            #     observed_rendering_diff + other_outgoing_directions_rendering_diff
+            # )
+            loss = torch.mean(observed_rendering_diff)
             loss.backward()
 
             # Check gradient norms

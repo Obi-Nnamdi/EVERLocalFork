@@ -190,8 +190,8 @@ class BRDFOptmizationParams(ParamGroup):
             250  # How often to save output model images to the tensorboard (in steps).
         )
 
-        self.incoming_light_divisions = 20  # How many sphere divisions should be used for calculating the incoming light
-        self.outgoing_light_divisions = 20  # How many sphere divisions should be used for calculating the outgoing light
+        self.incoming_light_points = 100  # How many sphere divisions should be used for calculating the incoming light
+        self.outgoing_light_points = 20  # How many sphere divisions should be used for calculating the outgoing light
         self.incoming_light_tmin = (
             0.01  # tmin to use when rendering incoming light rays (including caching)
         )

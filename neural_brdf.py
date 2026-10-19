@@ -739,7 +739,7 @@ if __name__ == "__main__":
 
     # Querying Spherical Directions
     incoming_light, _, incoming_light_dirs = gather_incoming_light_at_point(
-        xyz_map[chosen_point], renderer, tmin=0.01, sphere_divisions=4
+        xyz_map[chosen_point], renderer, tmin=0.01, num_incoming_points=40
     )
 
     # print(f"{incoming_light = }")
