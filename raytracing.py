@@ -121,8 +121,9 @@ def depth_map_to_xyz(
 def gather_incoming_light_at_point(
     point: torch.Tensor,
     renderer: FastRenderer,
+    *,
+    num_incoming_points: int,
     tmin=0.01,
-    sphere_divisions=10,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Spherical Queries for incoming light.
@@ -130,11 +131,9 @@ def gather_incoming_light_at_point(
     Color, Ray Origins, and Ray directions returned as N x 3 tensors.
     """
 
-    # torch.cuda.empty_cache()
-    # TODO: Research better method
     # TODO: Should this be spherical or hemispherical? (spherical for now, hemispherical would be best w/ normals)
 
-    rays_d, rays_o = generate_spherical_rays(point, divisions=sphere_divisions)
+    rays_d, rays_o = generate_spherical_rays(point, num_points=num_incoming_points)
     probe_image = renderer.trace_rays_from_single_rayo(rays_o, rays_d, tmin, 1e7)
 
     # (N x 3) tensor since there's not much of an "image" here to coerce to 2D.
@@ -144,8 +143,9 @@ def gather_incoming_light_at_point(
 def gather_incoming_light_at_points(
     points: torch.Tensor,
     renderer: FastRenderer,
+    *,
+    num_incoming_points: int,
     tmin=0.01,
-    sphere_divisions=10,
     fast=True,
     precompute_sh=False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -154,18 +154,19 @@ def gather_incoming_light_at_points(
         points: (N, 3) of all the points to get light from
         renderer: Renderer to query light directions from
         tmin: Starting t value that rays cast from
-        sphere_divisions: divisions to break up light queries into
+        num_incoming_points: "R" variable determining how many incoming light sources to sample.
 
     Outputs:
         incoming_light: (N, R, 3) where each point gets R sources of incoming light
         sphere_ray_o: (N, R, 3)
         sphere_ray_d: (N, R, 3)
     """
+
     base_rays_d, _ = generate_spherical_rays(
         torch.zeros(
             3,
         ),
-        divisions=sphere_divisions,
+        num_points=num_incoming_points,
     )  # (R, 3), (R, 3)
 
     R = base_rays_d.size(0)
@@ -226,26 +227,28 @@ def gather_incoming_light_at_points(
 def gather_outgoing_light_at_points(
     points: torch.Tensor,
     renderer: FastRenderer,
-    sphere_divisions=10,
+    *,
+    num_outgoing_points=10,
     ray_origin_offset_factor=0.001,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Inputs:
         points: (N, 3) of all the points to analyze
         renderer: Renderer to query light directions from
-        sphere_divisions: divisions to break up light queries into
-        ray_origin_offset_factor= how far away from each point to start the light query,
+        num_outgoing_points: "R" variable determining how many outgoing light directions to sample.
+        ray_origin_offset_factor: how far away from each point to start the light query,
 
     Outputs:
         incoming_light: (N, R, 3) where each point gets R sources of incoming light
         sphere_ray_o: (N, R, 3)
         sphere_ray_d: (N, R, 3)
     """
+
     starter_sphere_rays, _ = generate_spherical_rays(
         torch.zeros(
             3,
         ),
-        divisions=sphere_divisions,
+        num_points=num_outgoing_points,
     )  # (R, 3), (R, 3)
 
     R = starter_sphere_rays.size(0)
@@ -277,7 +280,7 @@ def gather_outgoing_light_at_points(
 
 
 def generate_spherical_rays(
-    point: torch.Tensor, divisions=10
+    point: torch.Tensor, *, num_points: int
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Use a sphere centered at the origin to build the ray directions as a hemisphere query
@@ -294,28 +297,10 @@ def generate_spherical_rays(
         rays_o: (N, 3)
     """
 
-    radius = 1
-    u = torch.linspace(0, 2 * torch.pi, divisions)
-    v = torch.linspace(0, torch.pi, divisions)
-
-    clamp_to_zero = lambda tensor: torch.where(torch.abs(tensor) < 1e-6, 0, tensor)
-
-    # Clamp small values to 0s (1s are fine from inspection)
-    sin_u = clamp_to_zero(torch.sin(u))
-    sin_v = clamp_to_zero(torch.sin(v))
-    cos_u = clamp_to_zero(torch.cos(u))
-    cos_v = clamp_to_zero(torch.cos(v))
-    x = radius * torch.outer(cos_u, sin_v).reshape(-1, 1)
-    y = radius * torch.outer(sin_u, sin_v).reshape(-1, 1)
-    z = radius * torch.outer(torch.ones_like(u), cos_v).reshape(-1, 1)
-
-    # No normalization needed
-    rays_d = torch.hstack((x, y, z))
-
-    # Get unique directions
-    # TODO: Might be nice to look into a more foolproof way to do this
-    rays_d = torch.unique(rays_d, dim=0)
-    rays_d = rays_d.cuda()
+    rays_d, _ = generate_evenly_spaced_sphere_points(
+        num_points, device=torch.device("cuda")
+    )
+    rays_d = rays_d.contiguous()
 
     rays_o = point.to(device="cuda")
     rays_o = rays_o.expand(rays_d.shape).contiguous()
@@ -331,7 +316,8 @@ def generate_evenly_spaced_sphere_points(
     num_points: int, radius: float = 1.0, device: torch.device | str = "cuda:0"
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    Generate (approximately) evenly distributed points on the surface of a sphere.
+    Generate (approximately) evenly distributed points on the surface of a sphere
+    placed at (0, 0).
 
     Returns:
         sphere_points: (num_points, 3) of XYZ coordinates
@@ -340,6 +326,7 @@ def generate_evenly_spaced_sphere_points(
     Adapted from https://medium.com/@gregking917/evenly-distributing-points-on-a-sphere-99903c7a21b6
     and https://matplotlib.org/stable/gallery/mplot3d/surface3d_2.html
     """
+
     point_indices = torch.arange(num_points, dtype=torch.float32, device=device)
     lon = torch.acos(
         -1 + (2 * point_indices + 1.0) / num_points
@@ -600,11 +587,11 @@ if __name__ == "__main__":
     points = points.cpu()
 
     # Plot sphere points to check how evenly spaced they are
-    fig = plt.figure()
-    ax = fig.add_subplot(projection="3d")
+    # fig = plt.figure()
+    # ax = fig.add_subplot(projection="3d")
 
-    ax.scatter(points[:, 0], points[:, 1], points[:, 2])
-    plt.show()
+    # ax.scatter(points[:, 0], points[:, 1], points[:, 2])
+    # plt.show()
 
     print("Optimizing " + args.model_path)
 
@@ -664,7 +651,7 @@ if __name__ == "__main__":
     torch.set_printoptions(sci_mode=False)
 
     num_points = 6
-    sphere_divisions = 4
+    num_sphere_points = 40
     rand_row = torch.randint(0, rendering_cam.image_height, (num_points,))
     rand_col = torch.randint(0, rendering_cam.image_width, (num_points,))
     # random_points = (torch.rand((5, 3)) * 40).cuda()
@@ -673,7 +660,7 @@ if __name__ == "__main__":
     incoming_light_fast, all_rays_o, all_rays_d = gather_incoming_light_at_points(
         random_points,
         renderer,
-        sphere_divisions=sphere_divisions,
+        num_incoming_points=num_sphere_points,
         fast=True,
         precompute_sh=False,
     )
@@ -684,21 +671,21 @@ if __name__ == "__main__":
     incoming_light_fast_inacc, _, _ = gather_incoming_light_at_points(
         random_points,
         renderer,
-        sphere_divisions=sphere_divisions,
+        num_incoming_points=num_sphere_points,
         fast=True,
         precompute_sh=True,
     )
     incoming_light_slow, _, _ = gather_incoming_light_at_points(
         random_points,
         renderer,
-        sphere_divisions=sphere_divisions,
+        num_incoming_points=num_sphere_points,
         fast=False,
         precompute_sh=False,
     )
     incoming_light_slow_inacc, _, _ = gather_incoming_light_at_points(
         random_points,
         renderer,
-        sphere_divisions=sphere_divisions,
+        num_incoming_points=num_sphere_points,
         fast=False,
         precompute_sh=True,
     )
@@ -720,7 +707,10 @@ if __name__ == "__main__":
 
     # Querying Spherical Directions
     incoming_light, rays_o, sphere_rays_d = gather_incoming_light_at_point(
-        xyz_map[chosen_point], renderer, tmin=0.01
+        xyz_map[chosen_point],
+        renderer,
+        num_incoming_points=num_sphere_points,
+        tmin=0.01,
     )
 
     # Plotting incoming light
@@ -736,7 +726,7 @@ if __name__ == "__main__":
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
     ax.set_zlabel("Z")
-    save_path = Path(model_params.model_path) / f"incoming_light_{chosen_point}.png"
+    save_path = Path(model_params._model_path) / f"incoming_light_{chosen_point}.png"
     plt.savefig(save_path)
     print(f"Saved output figure at {str(save_path)}")
 
@@ -745,7 +735,7 @@ if __name__ == "__main__":
     xyz_color_coords = torch.hstack((xyz_coords, incoming_light.cpu()))  #  (N x 6)
 
     np.save(
-        Path(model_params.model_path)
+        Path(model_params._model_path)
         / f"incoming_light_probe_cam_{camera_index}_point_{chosen_point}.npy",
         xyz_color_coords.numpy(),
     )
