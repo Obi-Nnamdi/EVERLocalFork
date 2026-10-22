@@ -71,8 +71,9 @@ def generate_SH_coeff_matrices(max_n: int, theta: torch.Tensor, phi: torch.Tenso
         phi: azimuthal angle(s), from 0 -> pi
 
     Returns:
-        tuple of (B_matrix, L_matrix).
+        tuple of (B_matrix, L_matrix), each with shape (num_angles, degrees)
     """
+
     assert max_n >= 0
     B_matrix = torch.empty(0,)
     l_values = [] # Holds "weight" for each SH to encourage stronger regularization for high freqs
@@ -84,7 +85,7 @@ def generate_SH_coeff_matrices(max_n: int, theta: torch.Tensor, phi: torch.Tenso
             B_matrix = torch.cat([B_matrix, real_sh_vals], dim=1)
             l_values.append(n * (n + 1))
 
-    # 
+    #
     L_matrix = torch.diag(torch.tensor(l_values)).to(dtype=torch.float32)
     return B_matrix.to(dtype=torch.float32), L_matrix
 
@@ -94,32 +95,43 @@ def solve_for_real_SH_coeffs(observation_vals: torch.Tensor, B_matrix: torch.Ten
     regularization from L_matrix and lambda_val.
 
     Parameters:
-        observation_vals: (n, k) vector.
+        observation_vals: (B, n, k) vector.
         B_matrix: (n, d) matrix.
         L_matrix: (d, d) matrix.
         lambda: float denoting amount of regularization to put on coeffs.
 
     Returns:
-        solutions: (d, k)
+        solutions: (B, d, k), where each batch has its own SH coeff solutions.
     """
 
     assert lambda_val >= 0
-    lambda_L_mat = math.sqrt(lambda_val) * L_matrix
-    stacked_BL_mat = torch.cat([B_matrix, lambda_L_mat], dim=0) # (n + d, d)
+    assert observation_vals.dim() == 3
 
+    batch_dim = observation_vals.size(0)
+
+    # Define A
+    lambda_L_mat = math.sqrt(lambda_val) * L_matrix
+    stacked_BL_mat = torch.cat([B_matrix, lambda_L_mat], dim=0)  # (n + d, d)
+    stacked_BL_mat = stacked_BL_mat[None, :].expand(batch_dim, -1, -1)  # (B, n + d, d)
+
+    # Define B
     d = L_matrix.size(0)
     n = B_matrix.size(0)
-    zero_padding = torch.zeros((d, observation_vals.size(1)), dtype=observation_vals.dtype, device=observation_vals.device)
+    zero_padding = torch.zeros(
+        (batch_dim, d, observation_vals.size(-1)),
+        dtype=observation_vals.dtype,
+        device=observation_vals.device,
+    )
 
     padded_observations = torch.cat(
-        [observation_vals, zero_padding], dim=0
-    )  # (n + d, k)
+        [observation_vals, zero_padding], dim=1
+    )  # (B, n + d, k)
 
     # Solve system of eq: min_x||Ax - b||
     solutions, _, _, _ = torch.linalg.lstsq(stacked_BL_mat, padded_observations)
 
     # Remove the extra stuff created for the regularization
-    return solutions[:n]
+    return solutions[:, :n, :]
 
 
 def fit_SH_to_data(
@@ -128,28 +140,34 @@ def fit_SH_to_data(
     phi_vals: torch.Tensor,
     lambda_val: float,
     max_SH_degree: int,
-) -> torch.Tensor:
+    return_residuals=False,
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    Fit SHs to data captured at various (theta, phi) angles.
+    Fit SHs to batched data captured at various (theta, phi) angles.
 
     Parameters:
-        observations: (n, k) vector, where each row is a new observation.
+        observations: (B, n, k) vector, where each row is a new observation.
         theta_vals: (n,) vector of theta values for each observation
         phi_vals: (n,) vector of phi values for each observation
         lambda: float denoting amount of regularization to put on coeffs.
         max_SH_degree: maximum degree of Spherical Harmonics to fit. All spherical harmonic orders are used.
 
     Returns:
-
+        coefficients: (B, sh_deg, k) of Spherical harmonic coefficients that fit the observations.
 
     """
+
     B_matrix, L_matrix = generate_SH_coeff_matrices(max_SH_degree, theta_vals, phi_vals)
 
     B_matrix = B_matrix.to(observations.device)
     L_matrix = L_matrix.to(observations.device)
 
     result = solve_for_real_SH_coeffs(observations, B_matrix, L_matrix, lambda_val)
-    return result
+
+    if return_residuals:
+        residuals = (B_matrix[None, :, :] @ result) - observations
+        return result, residuals
+    return result, torch.empty(0)
 
 
 if __name__ == "__main__":
@@ -164,6 +182,7 @@ if __name__ == "__main__":
     ).T.expand(
         -1, 3
     )  # (dummy RGB)
+    dummy_observation_vals = dummy_observation_vals[None, :].expand(10, -1, -1)
     # dummy_observation_vals = torch.ones_like(dummy_observation_vals) * 10
     lambda_val = 10
 
@@ -177,6 +196,7 @@ if __name__ == "__main__":
     )
 
     print(f"{result = }")
+    print(f"{result.shape = }")
 
     # residuals = B_matrix @ result - dummy_observation_vals
     # print(f"{torch.sum(torch.pow(residuals, 2)) = }")

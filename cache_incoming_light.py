@@ -1,7 +1,7 @@
 """
 Example Usage:
 python cache_incoming_light.py -m /data/trained_model -s /data/scene --preview_factor=64 --incoming_light_points=400 --outgoing_light_points=20 --num_probe_points=40
-python cache_incoming_light.py -m /data/trained_model -s /data/scene --preview_factor=4 --incoming_light_points=8 --outgoing_light_points=20 --num_probe_points=100_000
+python cache_incoming_light.py -m /data/trained_model -s /data/scene --preview_factor=4 --incoming_light_points=400 --outgoing_light_points=20 --num_probe_points=100_000
 """
 
 import time
@@ -19,12 +19,13 @@ from raytracing import (
     get_cameras,
     load_gaussian_model,
     render_gaussians,
-    generate_spherical_rays,
+    generate_evenly_spaced_sphere_points,
     gather_incoming_light_at_points,
     gather_outgoing_light_at_points,
 )
 from utils.general_utils import safe_state
 from utils.tensor_utils import size_of_tensor_bytes
+from spherical_harmonics_solving import fit_SH_to_data
 import sys
 from tqdm import tqdm
 
@@ -193,12 +194,6 @@ if __name__ == "__main__":
         gaussians, rendering_cameras[0], cast(PipelineParams, pp.extract(args))
     )
 
-    # Calculate how big our incoming light features will be when input into our model.
-    test_sphere_o, _ = generate_spherical_rays(
-        torch.zeros((3,)), num_points=brdf_args.incoming_light_points
-    )
-    incoming_light_size = test_sphere_o.size(0)  # R dimension
-
     # Allocate space for all of our big tensors (on CPU for more RAM, we'll copy from GPU over on each iteration)
     # full_incoming_light_tensor = torch.zeros(
     #     num_cameras, global_image_height * global_image_width, incoming_light_size, 3, dtype=torch.float
@@ -208,7 +203,10 @@ if __name__ == "__main__":
         int, args.num_probe_points
     )  # (or H * W for consistency?)
     incoming_light_probe_tensor = torch.zeros(
-        num_incoming_light_probe_points, incoming_light_size, 3, dtype=torch.float
+        num_incoming_light_probe_points,
+        brdf_args.incoming_light_points,
+        3,
+        dtype=torch.float,
     )  # (P, R, 3)
 
     # Tells each point where it needs to get its incoming light information from (I wish I could go down to
@@ -320,7 +318,7 @@ if __name__ == "__main__":
             precompute_sh=False,
         )  # (P, R, 3)
         full_incoming_light_colors = torch.cat(
-            [full_incoming_light_colors, incoming_light_colors]
+            [full_incoming_light_colors, incoming_light_colors], dim=0
         )
 
         # Outgoing light
@@ -331,8 +329,30 @@ if __name__ == "__main__":
             ray_origin_offset_factor=brdf_args.outgoing_light_t_offset,
         )
         full_outgoing_light_colors = torch.cat(
-            [full_outgoing_light_colors, outgoing_light_colors]
+            [full_outgoing_light_colors, outgoing_light_colors], dim=0
         )
+
+    # Fit spherical harmonics to incoming light
+    _, lat_lon_incoming_light_coordinates = generate_evenly_spaced_sphere_points(
+        brdf_args.incoming_light_points, device="cuda:0"
+    )
+    light_thetas = lat_lon_incoming_light_coordinates[:, 0]
+    light_phis = lat_lon_incoming_light_coordinates[:, 1]
+    sh_solving_lambda = 0
+    max_sh_degree = 2
+
+    incoming_light_sh_coeffs, residuals = fit_SH_to_data(
+        full_incoming_light_colors,
+        light_thetas,
+        light_phis,
+        sh_solving_lambda,
+        max_sh_degree,
+        return_residuals=True,
+    )
+
+    # print(f"{incoming_light_sh_coeffs = }")
+    print(f"{incoming_light_sh_coeffs.shape = }")
+    print(f"{torch.mean(residuals.pow(2))= }")
 
     # Copy back to CPU to get our probe tensors
     incoming_light_probe_tensor = full_incoming_light_colors.cpu()
