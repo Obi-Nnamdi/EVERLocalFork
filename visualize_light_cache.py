@@ -143,15 +143,41 @@ if __name__ == "__main__":
         ]
         outgoing_color_cols.extend(outgoing_light_col_names)
 
-    all_col_names = incoming_color_cols + outgoing_color_cols
+    all_color_col_names = incoming_color_cols + outgoing_color_cols
 
     # Create dataframe and save out to CSV
     probe_colors_df = pd.DataFrame(
-        all_probe_colors.cpu().numpy(), columns=all_col_names
+        all_probe_colors.cpu().numpy(), columns=all_color_col_names
     )
     light_probe_save_filename = visualization_save_dir / f"light_probe_colors.csv"
     probe_colors_df.to_csv(light_probe_save_filename)
     print(f"Saved light probe to {light_probe_save_filename}")
+
+    # Save out incoming light spherical harmonics
+    D_i = cache_dict["incoming_light_probe_spherical_harmonics"].size(1)
+    flattened_incoming_sh_harmonics = cache_dict[
+        "incoming_light_probe_spherical_harmonics"
+    ].reshape(
+        P, D_i * 3
+    )  # (P, D_i * 3)
+
+    incoming_sh_cols: list[str] = []
+    for i in range(D_i):
+        incoming_light_sh_col_names = [
+            f"in_feat_{i}_r",
+            f"in_feat_{i}_g",
+            f"in_feat_{i}_b",
+        ]
+        incoming_sh_cols.extend(incoming_light_sh_col_names)
+
+    probe_harmonics_df = pd.DataFrame(
+        flattened_incoming_sh_harmonics.cpu().numpy(), columns=incoming_sh_cols
+    )
+    light_probe_sh_save_filename = (
+        visualization_save_dir / f"light_probe_sh_harmonics.csv"
+    )
+    probe_harmonics_df.to_csv(light_probe_sh_save_filename)
+    print(f"Saved sh light probe to {light_probe_sh_save_filename}")
 
     # Save out our incoming light directions
     light_probe_directions_df = pd.DataFrame(

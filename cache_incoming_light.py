@@ -25,6 +25,7 @@ from raytracing import (
 )
 from utils.general_utils import safe_state
 from utils.tensor_utils import size_of_tensor_bytes
+from utils.sh_utils import eval_sh
 from spherical_harmonics_solving import fit_SH_to_data
 import sys
 from tqdm import tqdm
@@ -38,6 +39,8 @@ from typing import cast, TypedDict
 
 from cukd_py import run_knn, run_knn_stack_free
 
+import matplotlib.pyplot as plt
+
 # Class for the returned cache dictionary
 class BRDFCacheDict(TypedDict):
     """
@@ -47,12 +50,14 @@ class BRDFCacheDict(TypedDict):
     P is the number of probe points (<= HW)
     I is the number of rays used to sample incoming light
     O is the number of rays used to sample outgoing light
+    D_i is the number of spherical harmonic features used for incoming light
     """
 
     full_rendered_images: torch.Tensor  # (N, C, H, W)
     full_scene_point_cloud: torch.Tensor  # (N, H * W, 3)
     incoming_light_probe_colors: torch.Tensor  # (P, I, 3)
     incoming_light_probe_directions: torch.Tensor  # (I, 3)
+    incoming_light_probe_spherical_harmonics: torch.Tensor  # (P, D_i, 3)
     outgoing_light_probe_colors: torch.Tensor  # (P, O, 3)
     outgoing_light_probe_directions: torch.Tensor  # (O, 3)
     light_probe_query: torch.Tensor  # (N, 1, H, W)
@@ -298,10 +303,10 @@ if __name__ == "__main__":
     print("Generating Outgoing and Incoming Light Probe...")
     full_incoming_light_colors = torch.empty(
         0,
-    ).cuda()
+    ).cuda()  # Eventually (Full_P, R, 3)
     full_outgoing_light_colors = torch.empty(
         0,
-    ).cuda()
+    ).cuda()  # Eventually (Full_P, R, 3)
 
     # Generate our incoming and outgoing light in batches according to our batch size:
     incoming_light_batch_size = cast(int, args.incoming_light_batch_size)
@@ -332,13 +337,21 @@ if __name__ == "__main__":
             [full_outgoing_light_colors, outgoing_light_colors], dim=0
         )
 
+    # Sometimes you can get very negative values of incoming light.
+    # This makes no physical sense and should be clipped.
+    # TODO: Address root underlying cause?
+    full_incoming_light_colors = full_incoming_light_colors.clip_(min=0)
+    full_outgoing_light_colors = full_outgoing_light_colors.clip_(min=0)
+
     # Fit spherical harmonics to incoming light
-    _, lat_lon_incoming_light_coordinates = generate_evenly_spaced_sphere_points(
-        brdf_args.incoming_light_points, device="cuda:0"
+    xyz_incoming_light_coordinates, lat_lon_incoming_light_coordinates = (
+        generate_evenly_spaced_sphere_points(
+            brdf_args.incoming_light_points, device="cuda:0"
+        )
     )
     light_thetas = lat_lon_incoming_light_coordinates[:, 0]
     light_phis = lat_lon_incoming_light_coordinates[:, 1]
-    sh_solving_lambda = 0
+    sh_solving_lambda = 0.05
     max_sh_degree = 2
 
     incoming_light_sh_coeffs, residuals = fit_SH_to_data(
@@ -348,11 +361,66 @@ if __name__ == "__main__":
         sh_solving_lambda,
         max_sh_degree,
         return_residuals=True,
-    )
+    )  # (P, sh_degrees, 3)
 
     # print(f"{incoming_light_sh_coeffs = }")
     print(f"{incoming_light_sh_coeffs.shape = }")
     print(f"{torch.mean(residuals.pow(2))= }")
+
+    # Test evaluating them with cartesian directions
+    # Reshape to (P, incoming_light_dirs, 3, sh_degrees)
+    incoming_light_sh_coeffs = incoming_light_sh_coeffs.cpu()
+    expanded_incoming_light_sh_coeffs = incoming_light_sh_coeffs.permute(0, 2, 1)[
+        :, None, ...
+    ].expand(-1, xyz_incoming_light_coordinates.size(0), -1, -1)
+
+    xyz_incoming_light_coordinates = xyz_incoming_light_coordinates[None, ...].expand(
+        num_incoming_light_probe_points,
+        -1,
+        -1,
+    )  # (P, incoming_light_dirs, 3)
+
+    print(f"{xyz_incoming_light_coordinates.shape = }")
+    print(f"{expanded_incoming_light_sh_coeffs.shape = }")
+    sh_evals = eval_sh(
+        max_sh_degree, expanded_incoming_light_sh_coeffs, xyz_incoming_light_coordinates
+    )
+    print(f"{sh_evals.shape = }")
+
+    sh_eval_residuals = full_incoming_light_colors - sh_evals
+    print(f"{sh_eval_residuals.shape = }")
+    print(f"{torch.mean(sh_eval_residuals.pow(2)) = }")
+
+    graph_comparison_between_sh_and_actual_incoming_light = False
+    if graph_comparison_between_sh_and_actual_incoming_light:
+        # Plot result for one point
+        fig = plt.figure()
+        ax = fig.add_subplot(121, projection="3d")
+        chosen_point_idx = 401
+
+        xyz_incoming_light_coordinates = xyz_incoming_light_coordinates.cpu()
+
+        ax.set_title("Real Light Values")
+        ax.scatter(
+            xyz_incoming_light_coordinates[chosen_point_idx, :, 0],
+            xyz_incoming_light_coordinates[chosen_point_idx, :, 1],
+            xyz_incoming_light_coordinates[chosen_point_idx, :, 2],
+            c=full_incoming_light_colors[chosen_point_idx].cpu().clip(0, 1),
+        )
+        ax = fig.add_subplot(122, projection="3d")
+
+        ax.set_title("Spherical Harmonics (cartesian)")
+        ax.scatter(
+            xyz_incoming_light_coordinates[chosen_point_idx, :, 0],
+            xyz_incoming_light_coordinates[chosen_point_idx, :, 1],
+            xyz_incoming_light_coordinates[chosen_point_idx, :, 2],
+            c=sh_evals[chosen_point_idx].cpu().clip(0, 1),
+        )
+
+        plt.savefig(
+            Path(model_params._model_path)
+            / f"incoming_light_sh_saving_{chosen_point_idx}.png"
+        )
 
     # Copy back to CPU to get our probe tensors
     incoming_light_probe_tensor = full_incoming_light_colors.cpu()
@@ -409,6 +477,7 @@ if __name__ == "__main__":
         "full_scene_point_cloud": full_scene_point_cloud,
         "incoming_light_probe_colors": incoming_light_probe_tensor,
         "incoming_light_probe_directions": incoming_light_probe_tensor_directions,
+        "incoming_light_probe_spherical_harmonics": incoming_light_sh_coeffs,
         "outgoing_light_probe_colors": outgoing_light_probe_tensor,
         "outgoing_light_probe_directions": outgoing_light_probe_tensor_directions,
         "light_probe_query": light_probe_query_tensor,
