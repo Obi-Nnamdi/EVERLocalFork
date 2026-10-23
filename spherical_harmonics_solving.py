@@ -39,8 +39,6 @@ def real_spherical_harmonics(
     theta_numpy = theta.cpu().numpy()
     phi_numpy = phi.cpu().numpy()
 
-    y_nm_func = lambda n, m: sph_harm_y(n, m, theta_numpy, phi_numpy)
-
     # Define real-valued spherical harmonics according to formula
     if m == 0:
         return sph_harm_y(n, m, theta_numpy, phi_numpy).real
@@ -48,14 +46,12 @@ def real_spherical_harmonics(
     elif m > 0:
         # No need to add in the Condon-Shortly phase term again [(-1)**m], it's already part of
         # scipy's spherical harmonic function:
-        sqrt_2 = math.sqrt(2)
-        return sqrt_2 * sph_harm_y(n, m, theta_numpy, phi_numpy).real
+        return math.sqrt(2) * sph_harm_y(n, m, theta_numpy, phi_numpy).real
 
     else:
         # m < 0
         # Again, no need for additional phase term
-        sqrt_2 = math.sqrt(2)
-        return sqrt_2 * sph_harm_y(n, abs(m), theta_numpy, phi_numpy).imag
+        return math.sqrt(2) * sph_harm_y(n, abs(m), theta_numpy, phi_numpy).imag
 
 
 def generate_SH_coeff_matrices(
@@ -201,6 +197,8 @@ if __name__ == "__main__":
     print(f"{dummy_observation_vals[0, :, 0] = }")
 
     # with no regularization (lambda = 0), high frequency values grow incredibly large!
+    # this also messes up the cartesian vs spherical comparison and causes errors (assuming due
+    # to lack of precision)
     lambda_val = 0.05
 
     max_n = 4
