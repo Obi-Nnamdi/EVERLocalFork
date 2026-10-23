@@ -320,35 +320,28 @@ def generate_evenly_spaced_sphere_points(
     placed at (0, 0).
 
     Returns:
-        sphere_points: (num_points, 3) of XYZ coordinates
-        sphere_coordinates: (num_points, 2) of Lat (theta, 0->2pi) and Lon (phi, 0->pi) coordinates.
+        sphere_points: (num_points, 3) of XYZ coordinates, where Z = 1 at Lat = 0.
+        sphere_coordinates: (num_points, 2) of Lat (theta, 0->pi) and Lon (phi, 0->2pi) coordinates.
 
     Adapted from https://medium.com/@gregking917/evenly-distributing-points-on-a-sphere-99903c7a21b6
-    and https://matplotlib.org/stable/gallery/mplot3d/surface3d_2.html
     """
 
     point_indices = torch.arange(num_points, dtype=torch.float32, device=device)
-    lon = torch.acos(
+    lat = torch.acos(
         -1 + (2 * point_indices + 1.0) / num_points
-    )  # phi (azimuthal) [0 -> pi]
-    lat = (GOLDEN_ANGLE * point_indices) % (2 * torch.pi)  # theta (polar) [0 -> 2pi]
-
-    sin_lat = torch.sin(lat)
-    cos_lat = torch.cos(lat)
+    )  # theta (polar) [0 -> pi]
+    lon = (GOLDEN_ANGLE * point_indices) % (2 * torch.pi)  # phi (azimuthal) [0 -> 2pi]
 
     sin_lon = torch.sin(lon)
     cos_lon = torch.cos(lon)
 
-    # Asin method:
-    # lon = torch.asin( -1 + (2 * point_indices + 1.0) / num_points) [-pi/2 -> pi/2]
-    # x = cos_lat * cos_lon
-    # y = sin_lat * cos_lon
-    # z = sin_lon
+    sin_lat = torch.sin(lat)
+    cos_lat = torch.cos(lat)
 
     # Acos
-    x = cos_lat * sin_lon
-    y = sin_lat * sin_lon
-    z = cos_lon
+    x = cos_lon * sin_lat
+    y = sin_lon * sin_lat
+    z = cos_lat
 
     sphere_directions = torch.vstack((x, y, z)).T
     sphere_points = radius * sphere_directions

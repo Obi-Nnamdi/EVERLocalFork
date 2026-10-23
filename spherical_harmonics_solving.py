@@ -1,8 +1,8 @@
 import math
 import numpy as np
 import torch
-from scipy.special import sph_harm_y, sph_legendre_p, sph_harm_y_all
-
+from scipy.special import sph_harm_y
+from utils.sh_utils import eval_sh
 
 def normalization_constant_sh_coeff(n: int, m: int) -> float:
     assert abs(m) <= n
@@ -14,52 +14,53 @@ def normalization_constant_sh_coeff(n: int, m: int) -> float:
     else:
         numerator = 2 * n + 1 * math.factorial(n - abs(m))
         denominator = 4 * math.pi * math.factorial(n + abs(m))
-        return ((-1) ** (m)) * math.sqrt(2) * math.sqrt(numerator / denominator)
+        return math.sqrt(numerator / denominator)
 
 
 def real_spherical_harmonics(
     n: int, m: int, theta: torch.Tensor, phi: torch.Tensor
 ) -> np.ndarray:
     """
+    Use numpy's conventions to evaluate the real spherical harmonics:
+    https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.sph_harm_y.html
 
     Parameters:
         n: degree of the spherical harmonic (e.g, "l" in usual literature)
         m: order of the spherical harmonic
-        theta: polar angle(s), from 0 -> 2pi
-        phi: azimuthal angle(s), from 0 -> pi
+        theta: polar angle(s), from 0 -> pi
+        phi: azimuthal angle(s), from 0 -> 2pi
 
-    Adapted from the following resource:
-    https://peakd.com/hive-128780/@mes/220d6572
+    Adapted from the PlenOctree paper, appendix B.1: https://arxiv.org/abs/2103.14024.
     """
-    assert abs(m) <= n
-    theta = theta.cpu()
-    phi = phi.cpu()
 
-    y_nm_func = lambda n, m: sph_harm_y(n, m, theta, phi)
+    assert torch.all(theta >= 0) and torch.all(theta <= math.pi)
+    assert torch.all(phi >= 0) and torch.all(phi <= 2 * math.pi)
+    assert abs(m) <= n
+    theta_numpy = theta.cpu().numpy()
+    phi_numpy = phi.cpu().numpy()
+
+    y_nm_func = lambda n, m: sph_harm_y(n, m, theta_numpy, phi_numpy)
 
     # Define real-valued spherical harmonics according to formula
     if m == 0:
-        return y_nm_func(n, 0).real
+        return sph_harm_y(n, m, theta_numpy, phi_numpy).real
 
     elif m > 0:
-        neg_one_power = ((-1) ** m)
-        outside_factor = neg_one_power / math.sqrt(2)
-        inner_factor = y_nm_func(n, m) + neg_one_power * y_nm_func(n, -m)
-        return (outside_factor * inner_factor).real
+        # No need to add in the Condon-Shortly phase term again [(-1)**m], it's already part of
+        # scipy's spherical harmonic function:
+        sqrt_2 = math.sqrt(2)
+        return sqrt_2 * sph_harm_y(n, m, theta_numpy, phi_numpy).real
 
     else:
         # m < 0
-        neg_one_plus_power = ((-1) ** (m + 1))
-        outside_factor = neg_one_plus_power / (math.sqrt(2) * 1j)
-        abs_m = abs(m)
-
-        neg_one_abs_power = ((-1) ** abs_m)
-        inner_factor = y_nm_func(n, abs_m) - neg_one_abs_power * y_nm_func(n, -abs_m)
-
-        return (outside_factor * inner_factor).real
+        # Again, no need for additional phase term
+        sqrt_2 = math.sqrt(2)
+        return sqrt_2 * sph_harm_y(n, abs(m), theta_numpy, phi_numpy).imag
 
 
-def generate_SH_coeff_matrices(max_n: int, theta: torch.Tensor, phi: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+def generate_SH_coeff_matrices(
+    max_n: int, theta: torch.Tensor, phi: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Generates "B" and "L" matrix as seen by
     https://kvttt.github.io/files/Spherical_Harmonics_Fitting.pdf#page=1.83,
@@ -67,17 +68,21 @@ def generate_SH_coeff_matrices(max_n: int, theta: torch.Tensor, phi: torch.Tenso
 
     Parameters:
         max_n: max degree of the spherical harmonics
-        theta: polar angle(s), from 0 -> 2pi
-        phi: azimuthal angle(s), from 0 -> pi
+        theta: (n,) polar angle(s), from 0 -> pi
+        phi: (n,) azimuthal angle(s), from 0 -> 2pi
 
     Returns:
         tuple of (B_matrix, L_matrix), each with shape (num_angles, degrees)
     """
 
     assert max_n >= 0
-    B_matrix = torch.empty(0,)
-    l_values = [] # Holds "weight" for each SH to encourage stronger regularization for high freqs
-    for n in range (max_n + 1):
+    B_matrix = torch.empty(
+        0,
+    )
+    l_values = (
+        []
+    )  # Holds "weight" for each SH to encourage stronger regularization for high freqs
+    for n in range(max_n + 1):
         for m in range(-n, n + 1):
             # Create column vector of SH values and append them to our B matrix
             real_sh_vals = torch.from_numpy(real_spherical_harmonics(n, m, theta, phi))
@@ -89,7 +94,13 @@ def generate_SH_coeff_matrices(max_n: int, theta: torch.Tensor, phi: torch.Tenso
     L_matrix = torch.diag(torch.tensor(l_values)).to(dtype=torch.float32)
     return B_matrix.to(dtype=torch.float32), L_matrix
 
-def solve_for_real_SH_coeffs(observation_vals: torch.Tensor, B_matrix: torch.Tensor, L_matrix: torch.Tensor, lambda_val: float) -> torch.Tensor:
+
+def solve_for_real_SH_coeffs(
+    observation_vals: torch.Tensor,
+    B_matrix: torch.Tensor,
+    L_matrix: torch.Tensor,
+    lambda_val: float,
+) -> torch.Tensor:
     """
     Solve for the SH coeffs that would be needed to reconstruct observation_vals using the provided SH_coeffs from B_matrix and
     regularization from L_matrix and lambda_val.
@@ -147,13 +158,13 @@ def fit_SH_to_data(
 
     Parameters:
         observations: (B, n, k) vector, where each row is a new observation.
-        theta_vals: (n,) vector of theta values for each observation
-        phi_vals: (n,) vector of phi values for each observation
+        theta_vals: (n,) vector of theta values for each observation (0 -> pi), polar angle
+        phi_vals: (n,) vector of phi values for each observation (0 -> 2pi), aziumuthal angle
         lambda: float denoting amount of regularization to put on coeffs.
         max_SH_degree: maximum degree of Spherical Harmonics to fit. All spherical harmonic orders are used.
 
     Returns:
-        coefficients: (B, sh_deg, k) of Spherical harmonic coefficients that fit the observations.
+        coefficients: (B, (max_sh_degree + 1) ** 2, k) of Spherical harmonic coefficients that fit the observations.
 
     """
 
@@ -173,30 +184,67 @@ def fit_SH_to_data(
 if __name__ == "__main__":
     torch.manual_seed(0)
 
-    num_theta_vals = 100
-    theta_vals = torch.rand((num_theta_vals,)) * torch.pi * 2
-    phi_vals = torch.rand((num_theta_vals,)) * torch.pi * 2
+    num_theta_vals = 40
+    channels = 3
+    batches = 10
+
+    theta_vals = torch.linspace(0, torch.pi, num_theta_vals)
+    phi_vals = torch.linspace(0, torch.pi * 2, num_theta_vals)
 
     dummy_observation_vals = torch.atleast_2d(
-        2 * torch.cos(theta_vals) + 4 * torch.sin(phi_vals)
+        torch.cos(theta_vals) + torch.sin(phi_vals) + torch.cos(theta_vals * phi_vals)
     ).T.expand(
-        -1, 3
+        -1, channels
     )  # (dummy RGB)
-    dummy_observation_vals = dummy_observation_vals[None, :].expand(10, -1, -1)
-    # dummy_observation_vals = torch.ones_like(dummy_observation_vals) * 10
-    lambda_val = 10
+    dummy_observation_vals = dummy_observation_vals[None, :].expand(batches, -1, -1)
 
-    max_n = 2
-    result = fit_SH_to_data(
+    print(f"{dummy_observation_vals[0, :, 0] = }")
+
+    # with no regularization (lambda = 0), high frequency values grow incredibly large!
+    lambda_val = 0.05
+
+    max_n = 4
+    expected_sh_degrees = (max_n + 1) ** 2
+    result, _ = fit_SH_to_data(
         dummy_observation_vals.cuda(),
         theta_vals.cuda(),
         phi_vals.cuda(),
         lambda_val,
         max_n,
     )
+    assert result.shape == (batches, expected_sh_degrees, channels)
 
-    print(f"{result = }")
-    print(f"{result.shape = }")
+    # Trying to make x,y,z evaluation equivalent to theta and phi
+    x_vals = torch.cos(phi_vals) * torch.sin(theta_vals)
+    y_vals = torch.sin(phi_vals) * torch.sin(theta_vals)
+    z_vals = torch.cos(theta_vals)
 
-    # residuals = B_matrix @ result - dummy_observation_vals
-    # print(f"{torch.sum(torch.pow(residuals, 2)) = }")
+    xyz_dirs = torch.stack((x_vals, y_vals, z_vals), dim=1).cuda()
+    assert xyz_dirs.shape == (num_theta_vals, channels)
+
+    evaluating_sh_coeffs = result.permute(
+        0, 2, 1
+    )  # (B, deg, channels) -> (B, channels, deg)
+    evaluating_sh_coeffs = evaluating_sh_coeffs[0:1].expand(num_theta_vals, -1, -1)
+    assert evaluating_sh_coeffs.shape == (num_theta_vals, channels, expected_sh_degrees)
+
+    cartesian_max_n = 4
+    cartesian_expected_sh_degrees = (cartesian_max_n + 1) ** 2
+    cartesian_answer = eval_sh(cartesian_max_n, evaluating_sh_coeffs, xyz_dirs)
+    assert cartesian_answer.shape == (num_theta_vals, channels)
+
+    # Generate spherical coordinates result
+    B_matrix, _ = generate_SH_coeff_matrices(max_n, theta_vals, phi_vals)
+
+    start_degree = 0
+    end_degree = cartesian_expected_sh_degrees
+    truncated_B_matrix = B_matrix[:, start_degree:end_degree].cuda()
+    spherical_coords_answer = truncated_B_matrix @ result[0, start_degree:end_degree, 0]
+
+    print(f"{cartesian_answer[:, 0] = }")
+    print(f"{spherical_coords_answer = }")
+    # TODO: Some small differences, largely chalking them up to numerical error with
+    # sin and cos, but could use double precision
+    print(f"{spherical_coords_answer - cartesian_answer[:, 0] = }")
+    print(f"{spherical_coords_answer - cartesian_answer[:, 0] = }")
+    torch.testing.assert_close(spherical_coords_answer, cartesian_answer[:, 0])
