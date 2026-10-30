@@ -6,14 +6,13 @@ python cache_incoming_light.py -m /data/trained_model -s /data/scene --preview_f
 
 import os
 import sys
-import time
 from argparse import ArgumentParser
 from pathlib import Path
 from typing import TypedDict, cast
 
 import matplotlib.pyplot as plt
 import torch
-from cukd_py import run_knn, run_knn_stack_free
+from cukd_py import run_knn_stack_free
 from matplotlib.figure import SubFigure
 from tqdm import tqdm
 
@@ -269,7 +268,7 @@ if __name__ == "__main__":
         dtype=torch.float,
     )  # (N, C, H, W)
 
-    print(f"Allocated Tensors.")
+    print("Allocated Tensors.")
     # print(f"Full incoming light tensor size (GB): {full_incoming_light_tensor.element_size() * full_incoming_light_tensor.nelement() / 1024 / 1024 / 1024}")
     print(
         f"Full incoming and outgoing light probe tensor size (GB): {size_of_tensor_bytes(incoming_light_probe_tensor) / 1024 / 1024 / 1024}"
@@ -285,7 +284,7 @@ if __name__ == "__main__":
     )
 
     # Fill up these huge tensors index by index
-    print(f"Performing initial fill of our camera rendering and XYZ tensors...")
+    print("Performing initial fill of our camera rendering and XYZ tensors...")
     for camera_index in tqdm(range(num_cameras)):
         torch.cuda.empty_cache()
 
@@ -321,7 +320,7 @@ if __name__ == "__main__":
             num_cameras * global_image_height * global_image_width, device="cuda"
         )[:num_incoming_light_probe_points].cpu()
     except torch.OutOfMemoryError:
-        print(f"Downsampling on CPU....")
+        print("Downsampling on CPU....")
         rand_points = torch.randperm(
             num_cameras * global_image_height * global_image_width
         )[:num_incoming_light_probe_points]
