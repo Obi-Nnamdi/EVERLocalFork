@@ -1,5 +1,17 @@
-from arguments import ModelParams, PipelineParams, OptimizationParams
+import math
+import sys
+import time
 from argparse import ArgumentParser
+from pathlib import Path
+from typing import Any, TypedDict, cast
+
+import slangtorch
+import torch
+from torch import nn
+from torch.autograd import Function
+
+from arguments import ModelParams, OptimizationParams, PipelineParams
+from gaussian_renderer.ever import get_ray_directions
 from old_scripts.extra_model_architectures import Blinn_Phong_BRDF
 from raytracing import (
     build_gaussian_renderer,
@@ -9,23 +21,12 @@ from raytracing import (
     load_gaussian_model,
     render_gaussians,
 )
-from utils.general_utils import safe_state
-import sys
-from typing import TypedDict, Any, cast
-
 from scene.cameras import MiniCam
-from gaussian_renderer.ever import get_ray_directions
-import torch
-from torch import nn
-from torch.autograd import Function
-import math
-import time
 
 # Import and build our custom slangtorch kernel for evaluating BRDFs.
-from pathlib import Path
-import slangtorch
-
 from slangtorch_kernel_compilation import brdf_eval_kernels
+from utils.general_utils import safe_state
+
 
 class EvalBlinnPhongBRDF(Function):
     """
@@ -312,7 +313,7 @@ class decoder_block(nn.Module):
 
 
 class UNet_BRDF_Normal_Predictor(nn.Module):
-    def __init__(self, img_height: int, img_width: int) -> None:
+    def __init__(self, img_height: int, img_width: int, incoming_light_features: int) -> None:
         super().__init__()
 
         self.img_height = img_height
@@ -322,7 +323,7 @@ class UNet_BRDF_Normal_Predictor(nn.Module):
         self.spec_brdf_size = 4
         self.normal_size = 2  # (x, y) components of tangent plane vector
         self.max_spec_c = 16
-        self.starting_input_channels = 4  # (RGBD)
+        self.starting_input_channels = 4 + incoming_light_features  # (RGBD + Incoming Light)
 
         # Define U-Net architecture with residual connections on image
         """ Encoder 1 """
