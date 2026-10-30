@@ -4,42 +4,40 @@ python cache_incoming_light.py -m /data/trained_model -s /data/scene --preview_f
 python cache_incoming_light.py -m /data/trained_model -s /data/scene --preview_factor=4 --incoming_light_points=400 --outgoing_light_points=20 --num_probe_points=100_000
 """
 
+import os
+import sys
 import time
+from argparse import ArgumentParser
+from pathlib import Path
+from typing import TypedDict, cast
+
+import matplotlib.pyplot as plt
+import torch
+from cukd_py import run_knn, run_knn_stack_free
+from matplotlib.figure import SubFigure
+from tqdm import tqdm
 
 from arguments import (
-    ModelParams,
-    PipelineParams,
-    OptimizationParams,
     BRDFOptmizationParams,
+    ModelParams,
+    OptimizationParams,
+    PipelineParams,
 )
-from argparse import ArgumentParser
 from raytracing import (
     build_gaussian_renderer,
     depth_map_to_xyz,
+    gather_incoming_light_at_points,
+    gather_outgoing_light_at_points,
+    generate_evenly_spaced_sphere_points,
     get_cameras,
     load_gaussian_model,
     render_gaussians,
-    generate_evenly_spaced_sphere_points,
-    gather_incoming_light_at_points,
-    gather_outgoing_light_at_points,
 )
-from utils.general_utils import safe_state
-from utils.tensor_utils import size_of_tensor_bytes
-from utils.sh_utils import eval_sh
 from spherical_harmonics_solving import fit_SH_to_data
-import sys
-from tqdm import tqdm
+from utils.general_utils import safe_state
+from utils.sh_utils import eval_sh
+from utils.tensor_utils import size_of_tensor_bytes
 
-import torch
-
-from pathlib import Path
-import os
-
-from typing import cast, TypedDict
-
-from cukd_py import run_knn, run_knn_stack_free
-
-import matplotlib.pyplot as plt
 
 # Class for the returned cache dictionary
 class BRDFCacheDict(TypedDict):
@@ -122,6 +120,40 @@ def naive_calculate_nearest_neighbor(
     return min_distances, closest_points
 
 
+def plot_sh_inc_light_vs_actual(
+    full_incoming_light_colors: torch.Tensor,
+    xyz_incoming_light_coordinates: torch.Tensor,
+    sh_evals: torch.Tensor,
+    chosen_point_idx: int,
+    fig: SubFigure,
+):
+    """
+    Graph how incoming light looks when evaluated with spherical harmonics
+    compared to actual values of incoming light on the given figure.
+    """
+    ax = fig.add_subplot(121, projection="3d")
+
+    xyz_incoming_light_coordinates = xyz_incoming_light_coordinates.cpu()
+
+    ax.set_title("Actual Light")
+    ax.scatter(
+        xyz_incoming_light_coordinates[chosen_point_idx, :, 0],
+        xyz_incoming_light_coordinates[chosen_point_idx, :, 1],
+        xyz_incoming_light_coordinates[chosen_point_idx, :, 2],
+        c=full_incoming_light_colors[chosen_point_idx].cpu().clip(0, 1),
+    )
+    ax = fig.add_subplot(122, projection="3d")
+
+    ax.set_title("Sph. Harm (cart.)")
+    ax.scatter(
+        xyz_incoming_light_coordinates[chosen_point_idx, :, 0],
+        xyz_incoming_light_coordinates[chosen_point_idx, :, 1],
+        xyz_incoming_light_coordinates[chosen_point_idx, :, 2],
+        c=sh_evals[chosen_point_idx].cpu().clip(0, 1),
+    )
+    fig.suptitle(f"Point {chosen_point_idx}")
+
+
 if __name__ == "__main__":
     # Set up command line argument parser
     parser = ArgumentParser(description="Manual Renderer Parameters")
@@ -135,7 +167,7 @@ if __name__ == "__main__":
         default=None,
         help="Checkpoint to resume ever model from.",
     )
-    parser.add_argument("--detect_anomaly", action="store_true", default=False)
+    parser.add_argument("--graph_sh", action="store_true", default=False)
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument(
         "--caching_batch_size",
@@ -168,7 +200,6 @@ if __name__ == "__main__":
     # Load Gaussians
     model_params: ModelParams = cast(ModelParams, lp.extract(args))
 
-    torch.autograd.set_detect_anomaly(args.detect_anomaly)
     gaussians = load_gaussian_model(
         model_params,
         cast(OptimizationParams, op.extract(args)),
@@ -363,66 +394,71 @@ if __name__ == "__main__":
         return_residuals=True,
     )  # (P, sh_degrees, 3)
 
-    # print(f"{incoming_light_sh_coeffs = }")
-    print(f"{incoming_light_sh_coeffs.shape = }")
-    print(f"{torch.mean(residuals.pow(2))= }")
-
-    # Test evaluating them with cartesian directions
-    # Reshape to (P, incoming_light_dirs, 3, sh_degrees)
-    incoming_light_sh_coeffs = incoming_light_sh_coeffs.cpu()
-    expanded_incoming_light_sh_coeffs = incoming_light_sh_coeffs.permute(0, 2, 1)[
-        :, None, ...
-    ].expand(-1, xyz_incoming_light_coordinates.size(0), -1, -1)
-
-    xyz_incoming_light_coordinates = xyz_incoming_light_coordinates[None, ...].expand(
-        num_incoming_light_probe_points,
-        -1,
-        -1,
-    )  # (P, incoming_light_dirs, 3)
-
-    print(f"{xyz_incoming_light_coordinates.shape = }")
-    print(f"{expanded_incoming_light_sh_coeffs.shape = }")
-    sh_evals = eval_sh(
-        max_sh_degree, expanded_incoming_light_sh_coeffs, xyz_incoming_light_coordinates
+    print(
+        f"Spherical Harmonic Fitting Avg. Residual per point: {torch.mean(residuals.pow(2))}"
     )
-    print(f"{sh_evals.shape = }")
 
-    sh_eval_residuals = full_incoming_light_colors - sh_evals
-    print(f"{sh_eval_residuals.shape = }")
-    print(f"{torch.mean(sh_eval_residuals.pow(2)) = }")
+    if args.graph_sh:
+        # Test evaluating fit SH coefficients with cartesian directions
+        # Reshape to (P, incoming_light_dirs, 3, sh_degrees)
+        expanded_incoming_light_sh_coeffs = incoming_light_sh_coeffs.permute(0, 2, 1)[
+            :, None, ...
+        ].expand(-1, xyz_incoming_light_coordinates.size(0), -1, -1)
 
-    graph_comparison_between_sh_and_actual_incoming_light = False
-    if graph_comparison_between_sh_and_actual_incoming_light:
-        # Plot result for one point
-        fig = plt.figure()
-        ax = fig.add_subplot(121, projection="3d")
-        chosen_point_idx = 401
+        xyz_incoming_light_coordinates = xyz_incoming_light_coordinates[
+            None, ...
+        ].expand(
+            num_incoming_light_probe_points,
+            -1,
+            -1,
+        )  # (P, incoming_light_dirs, 3)
 
-        xyz_incoming_light_coordinates = xyz_incoming_light_coordinates.cpu()
-
-        ax.set_title("Real Light Values")
-        ax.scatter(
-            xyz_incoming_light_coordinates[chosen_point_idx, :, 0],
-            xyz_incoming_light_coordinates[chosen_point_idx, :, 1],
-            xyz_incoming_light_coordinates[chosen_point_idx, :, 2],
-            c=full_incoming_light_colors[chosen_point_idx].cpu().clip(0, 1),
+        print(f"{xyz_incoming_light_coordinates.shape = }")
+        print(f"{expanded_incoming_light_sh_coeffs.shape = }")
+        sh_evals = eval_sh(
+            max_sh_degree,
+            expanded_incoming_light_sh_coeffs,
+            xyz_incoming_light_coordinates,
         )
-        ax = fig.add_subplot(122, projection="3d")
+        print(f"{sh_evals.shape = }")
 
-        ax.set_title("Spherical Harmonics (cartesian)")
-        ax.scatter(
-            xyz_incoming_light_coordinates[chosen_point_idx, :, 0],
-            xyz_incoming_light_coordinates[chosen_point_idx, :, 1],
-            xyz_incoming_light_coordinates[chosen_point_idx, :, 2],
-            c=sh_evals[chosen_point_idx].cpu().clip(0, 1),
-        )
+        sh_eval_residuals = full_incoming_light_colors - sh_evals
+        print(f"{sh_eval_residuals.shape = }")
+        print(f"{torch.mean(sh_eval_residuals.pow(2)) = }")
 
-        plt.savefig(
+        # Plot comparisons between a few points
+        num_points = 8
+        rows = 4
+        cols = num_points // rows
+        all_rand_points = torch.randint(num_incoming_light_probe_points, (num_points,))
+
+        main_figure = plt.figure(figsize=(10, 12))
+        subfigures = main_figure.subfigures(rows, cols)
+
+        i = 0
+        for row in range(rows):
+            for col in range(cols):
+                chosen_point = int(all_rand_points[i].item())
+                plot_sh_inc_light_vs_actual(
+                    full_incoming_light_colors,
+                    xyz_incoming_light_coordinates,
+                    sh_evals,
+                    chosen_point,
+                    subfigures[row, col],
+                )
+                i += 1
+
+        sh_graph_save_path = (
             Path(model_params._model_path)
-            / f"incoming_light_sh_saving_{chosen_point_idx}.png"
+            / f"incoming_light_sh_saving_{num_points}_points.png"
         )
+
+        plt.savefig(sh_graph_save_path)
+        print(f"Saved incoming light comparison graph at {sh_graph_save_path}.")
 
     # Copy back to CPU to get our probe tensors
+    # Put original SH coeffs on CPU
+    incoming_light_sh_coeffs = incoming_light_sh_coeffs.cpu()
     incoming_light_probe_tensor = full_incoming_light_colors.cpu()
     outgoing_light_probe_tensor = full_outgoing_light_colors.cpu()
 
