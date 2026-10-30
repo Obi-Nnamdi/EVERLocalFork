@@ -1,9 +1,14 @@
 {
   "name": "EVER Devcontainer",
   "image": "obinnamdi/ever:v1.7_full_build_vscode",
-  "forwardPorts": [6006],
+  "forwardPorts": [
+    6006
+  ],
   "portsAttributes": {
-    "6006": { "label": "ServerRenderer", "onAutoForward": "notify" }
+    "6006": {
+      "label": "ServerRenderer",
+      "onAutoForward": "notify"
+    }
   },
   "runArgs": [
     "--gpus",
@@ -29,13 +34,12 @@
     // https://blog.yadutaf.fr/2017/09/10/running-a-graphical-app-in-a-docker-container-on-a-remote-server/
     "-v",
     "/home/nnamdi-obi/.Xauthority:/home/vscode/.Xauthority",
-
     // NEEDED for GUI Apps to work.
     "--network=host"
   ],
-
-
-  "otherPortsAttributes": { "onAutoForward": "ignore" },
+  "otherPortsAttributes": {
+    "onAutoForward": "ignore"
+  },
   "customizations": {
     "vscode": {
       "extensions": [
@@ -45,10 +49,10 @@
         "shader-slang.slang-language-extension",
         "ms-vscode.cpptools",
         "eamodio.gitlens",
-        "ms-python.black-formatter",
         "mechatroner.rainbow-csv",
         "timonwong.shellcheck",
-        "ms-vscode.cmake-tools"
+        "ms-vscode.cmake-tools",
+        "charliermarsh.ruff"
       ],
       "settings": {
         "remote.localPortHost": "127.0.0.1",
@@ -61,13 +65,10 @@
   // Proper editing
   // "remoteUser": "vscode",
   // "containerUser": "vscode",
-  
   // Get conda activate <env> syntax working.
   "postCreateCommand": [
     "bash",
     "-c",
-    "conda init"
+    "conda init && pip install ruff"
   ]
-
-
 }
