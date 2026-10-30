@@ -4,13 +4,13 @@ import torch
 from torch.autograd import Function
 
 # Import and build our custom slangtorch kernel for evaluating BRDFs.
-
 from slangtorch_kernel_compilation import (
     MAX_INCOMING_LIGHT_DIRECTIONS_FOR_LOOP_EVAL,
     MAX_NUMEL_FOR_SLANGTORCH,
     USE_CHECKPOINTING_FOR_INCOMING_LIGHT_PROBE_BACKWARD_PASS,
     brdf_eval_kernels,
 )
+
 
 class BatchEvalBlinnPhongBRDFMemSave(Function):
     """
@@ -299,11 +299,6 @@ class BatchEvalBlinnPhongBRDFMultiOutgoingLight(Function):
             ),
         )
 
-        # print(f"{normals_grad = }")
-        # print(f"{diffuse_K_grad = }")
-        # print(f"{specular_K_grad = }")
-        # print(f"{spec_reflect_c_grad = }")
-
         return (
             None,
             None,
@@ -322,6 +317,7 @@ def calc_grid_size(dim_size: int, block_size: int) -> int:
 
 
 def batch_eval_blinn_phong_outgoing_radiance_with_probe_mem_save(
+    *,
     probe_incoming_light_colors: torch.Tensor,
     probe_incoming_light_dirs: torch.Tensor,
     incoming_light_probe_query: torch.Tensor,
@@ -389,6 +385,7 @@ def batch_eval_blinn_phong_outgoing_radiance_with_probe_mem_save(
 
 
 def batch_eval_blinn_phong_varying_outgoing_radiance_with_probe(
+    *,
     probe_incoming_light: torch.Tensor,
     probe_incoming_light_dirs: torch.Tensor,
     probe_outgoing_light: torch.Tensor,
