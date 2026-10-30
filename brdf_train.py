@@ -5,68 +5,55 @@ python brdf_train.py -m /data/trained_model -s /data/scene --cache_evaluation_ba
 python brdf_train.py -m /data/trained_model -s /data/scene --cache_evaluation_batch_size=200  --training_epochs=5 --cache_location=/data/trained_model/brdf_ever_cache/full_cache_dict.pt --detect_anomaly --tensorboard_log_comment="diffuse_only_1_image"
 """
 
-from arguments import (
-    ModelParams,
-    PipelineParams,
-    OptimizationParams,
-    BRDFOptmizationParams,
-)
+import os
+import sys
 from argparse import ArgumentParser
-from neural_brdf import (
-    UNet_BRDF_Normal_Predictor,
-    batch_transform_normals_to_world_space,
-    get_stacked_camera_to_world_rotation_tensor,
-    eval_blinn_phong_outgoing_radiance,
-    FullModelOutput,
-)
+from collections.abc import Iterator
+from datetime import datetime
+from pathlib import Path
+from typing import cast
 
+# Graphing
+import matplotlib
+import torch
+from torch import nn
+from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.tensorboard.writer import SummaryWriter
+from tqdm import tqdm
+
+from arguments import (
+    BRDFOptmizationParams,
+    ModelParams,
+    OptimizationParams,
+    PipelineParams,
+)
 from batch_eval_blinn_phong_brdf_mem_save import (
     batch_eval_blinn_phong_outgoing_radiance_with_probe_mem_save,
     batch_eval_blinn_phong_varying_outgoing_radiance_with_probe,
 )
-
+from cache_incoming_light import BRDFCacheDict
+from neural_brdf import (
+    FullModelOutput,
+    UNet_BRDF_Normal_Predictor,
+    batch_transform_normals_to_world_space,
+    eval_blinn_phong_outgoing_radiance,
+    get_stacked_camera_to_world_rotation_tensor,
+)
 from raytracing import (
-    build_gaussian_renderer,
-    depth_map_to_xyz,
-    get_cameras,
-    load_gaussian_model,
-    render_gaussians,
     generate_spherical_rays,
-    gather_incoming_light_at_points,
+    get_cameras,
     plot_incoming_light_and_outgoing_radiance,
     plot_outgoing_radiance_for_multiple_cameras,
 )
-from cache_incoming_light import BRDFCacheDict
 from utils.general_utils import safe_state
-import sys
-from tqdm import tqdm
-
-import torch
-from torch import nn
-
-from pathlib import Path
-import os
-import time
-
-from typing import cast
-from datetime import datetime
-
-from torch.utils.tensorboard.writer import SummaryWriter
-from torch.utils.data import TensorDataset, DataLoader
-
-# Graphing
-import matplotlib
-
 from utils.tensor_utils import (
     nchw_tensor_to_npc,
     npc_tensor_to_nchw,
     pretty_display_normal_tensor,
-    full_print_tensor,
 )
 
 matplotlib.use("Agg")  # headless mode
 import matplotlib.pyplot as plt
-from matplotlib.figure import Figure
 
 
 def report_visual_metrics_to_tensorboard(
@@ -91,20 +78,20 @@ def report_visual_metrics_to_tensorboard(
     image_reporting_batch_size: int = 4,  # (batch dimension for showing our images)
 ):
     writer.add_images(
-        f"camera_rgb_images",
+        "camera_rgb_images",
         rendered_images[:image_reporting_batch_size, :3].clip(0, 1),
         step_num,
         dataformats="NCHW",
     )
     writer.add_images(
-        f"camera_depth_images",
+        "camera_depth_images",
         rendered_images[:image_reporting_batch_size, 3:4].clip(0, 1),
         step_num,
         dataformats="NCHW",
     )
     # Show the reconstructed images
     writer.add_images(
-        f"reconstructed_camera_images",
+        "reconstructed_camera_images",
         npc_tensor_to_nchw(
             outgoing_radiance[:image_reporting_batch_size],
             global_image_height,
@@ -114,24 +101,24 @@ def report_visual_metrics_to_tensorboard(
     )
 
     writer.add_images(
-        f"diffuse_output",
+        "diffuse_output",
         model_output["brdf"]["diffuse"][:image_reporting_batch_size].clip(0, 1),
         step_num,
     )
     writer.add_images(
-        f"specular_output",
+        "specular_output",
         model_output["brdf"]["specular"][:image_reporting_batch_size].clip(0, 1),
         step_num,
     )
     writer.add_images(
-        f"specular_c_mapped_0_1",
+        "specular_c_mapped_0_1",
         model_output["brdf"]["specular_c"][:image_reporting_batch_size]
         / brdf_normal_model.max_spec_c,
         step_num,
     )
 
     writer.add_images(
-        f"camera_normal",
+        "camera_normal",
         pretty_display_normal_tensor(
             npc_tensor_to_nchw(
                 camera_normals_normed[:image_reporting_batch_size],
@@ -142,7 +129,7 @@ def report_visual_metrics_to_tensorboard(
         step_num,
     )
     writer.add_images(
-        f"world_normal",
+        "world_normal",
         pretty_display_normal_tensor(
             npc_tensor_to_nchw(
                 world_normals[:image_reporting_batch_size],
@@ -257,6 +244,21 @@ def report_visual_metrics_to_tensorboard(
     writer.flush()
 
 
+def extract_gradient_norm(parameters: Iterator[torch.nn.Parameter]):
+    norm_type = 2
+    total_norm = torch.norm(
+        torch.stack(
+            [
+                torch.norm(p.grad.detach(), norm_type)
+                for p in parameters
+                if p.grad is not None
+            ]
+        ),
+        norm_type,
+    )
+    return total_norm
+
+
 if __name__ == "__main__":
     # Set up command line argument parser
     parser = ArgumentParser(description="Manual Renderer Parameters")
@@ -320,6 +322,9 @@ if __name__ == "__main__":
     rendered_images = cache_dict["full_rendered_images"]  # (N, 4, H, W)
     full_scene_point_cloud = cache_dict["full_scene_point_cloud"]  # (N, H * W, 3)
     probe_incoming_light_colors = cache_dict["incoming_light_probe_colors"]  # (P, R, 3)
+    probe_incoming_light_shs = cache_dict[
+        "incoming_light_probe_spherical_harmonics"
+    ]  # (P, D_i, 3)
     probe_outgoing_light_colors = cache_dict["outgoing_light_probe_colors"]  # (P, R, 3)
     probe_incoming_light_directions = cache_dict[
         "incoming_light_probe_directions"
@@ -376,7 +381,15 @@ if __name__ == "__main__":
     rendered_images[:, 3] -= min_depth_val
     rendered_images[:, 3] /= max_depth_val - min_depth_val
 
+    # Build full incoming light SH input for every image tensor
+    full_sh_tensor = probe_incoming_light_shs[light_query_mapping]  # (N, HW, D_i, 3)
+    full_sh_tensor = full_sh_tensor.flatten(2)  # (N, HW, D_i * 3)
+    full_sh_tensor = npc_tensor_to_nchw(
+        full_sh_tensor, global_image_height, global_image_width
+    )  # (N, D_i * 3, HW)
+
     # Build our full dataset
+    # TODO: Should be reverted.
     single_camera_debug = True
 
     torch.manual_seed(0)
@@ -385,6 +398,7 @@ if __name__ == "__main__":
         light_query_mapping,
         outgoing_directions,
         cameras_to_world_rotation,
+        full_sh_tensor,
     )
 
     if single_camera_debug:
@@ -393,6 +407,7 @@ if __name__ == "__main__":
             light_query_mapping[:1],
             outgoing_directions[:1],
             cameras_to_world_rotation[:1],
+            full_sh_tensor[:1],
         )
 
     training_dataloader = DataLoader(
@@ -401,7 +416,7 @@ if __name__ == "__main__":
 
     # Instanciate the BRDF_normal_predictor
     brdf_normal_model = UNet_BRDF_Normal_Predictor(
-        global_image_height, global_image_width
+        global_image_height, global_image_width, full_sh_tensor.size(1)
     )
     brdf_normal_model = brdf_normal_model.cuda()
     brdf_normal_model.train()
@@ -411,7 +426,7 @@ if __name__ == "__main__":
         print(f"Loading checkpoint from {brdf_args.resume_from}.")
         model_state_dict = torch.load(Path(brdf_args.resume_from))
         brdf_normal_model.load_state_dict(model_state_dict)
-        print(f"Loaded model checkpoint.")
+        print("Loaded model checkpoint.")
 
     # Training Config
     squared_error_loss_fn = nn.MSELoss(reduction="none")
@@ -424,17 +439,16 @@ if __name__ == "__main__":
         lr=lr,
     )
 
-    epochs = 100
     step_num = 0
 
     for epoch_num in tqdm(range(brdf_args.training_epochs), desc="Epoch Progress"):
-
         # Main training loop per epoch:
         for (
             rendered_image_batch,
             query_batch,
             outgoing_dir_batch,
             camera_to_world_transform_batch,
+            incoming_light_sh_batch,
         ) in tqdm(training_dataloader, desc="Batch Progress", leave=False):
             rendered_image_batch = cast(torch.Tensor, rendered_image_batch)
             query_batch = cast(torch.Tensor, query_batch)
@@ -447,9 +461,12 @@ if __name__ == "__main__":
             torch.cuda.empty_cache()
 
             # Ask for our BRDF values
-            model_output = cast(
-                FullModelOutput, brdf_normal_model(rendered_image_batch)
-            )
+            # TODO: Inefficient memory usage (should be one preallocated tensor)
+            model_input_batch = torch.cat(
+                [rendered_image_batch, incoming_light_sh_batch], dim=1
+            )  # (N, 4 + D_i, H, W) model input
+
+            model_output = cast(FullModelOutput, brdf_normal_model(model_input_batch))
 
             # Collect Model Outputs
             Kd = nchw_tensor_to_npc(model_output["brdf"]["diffuse"])  # (N, H * W, 3)
@@ -471,14 +488,14 @@ if __name__ == "__main__":
 
             outgoing_radiance = (
                 batch_eval_blinn_phong_outgoing_radiance_with_probe_mem_save(
-                    probe_incoming_light_colors,
-                    probe_incoming_light_directions,
-                    query_batch,
-                    outgoing_dir_batch,
-                    world_normals,
-                    Ks,
-                    Kd,
-                    spec_c,
+                    probe_incoming_light_colors=probe_incoming_light_colors,
+                    probe_incoming_light_dirs=probe_incoming_light_directions,
+                    incoming_light_probe_query=query_batch,
+                    outgoing_directions=outgoing_dir_batch,
+                    normals=world_normals,
+                    diffuse_K=Kd,
+                    specular_K=Ks,
+                    spec_reflect_c=spec_c,
                 )
             )  # (B, HW, 3)
 
@@ -495,15 +512,15 @@ if __name__ == "__main__":
 
             total_outgoing_color_squared_diff = (
                 batch_eval_blinn_phong_varying_outgoing_radiance_with_probe(
-                    probe_incoming_light_colors,
-                    probe_incoming_light_directions,
-                    probe_outgoing_light_colors,
-                    probe_outgoing_light_directions,
-                    query_batch,
-                    world_normals,
-                    Kd,
-                    Ks,
-                    spec_c,
+                    probe_incoming_light=probe_incoming_light_colors,
+                    probe_incoming_light_dirs=probe_incoming_light_directions,
+                    probe_outgoing_light=probe_outgoing_light_colors,
+                    probe_outgoing_light_dirs=probe_outgoing_light_directions,
+                    light_probe_query=query_batch,
+                    normals=world_normals,
+                    diffuse_K=Kd,
+                    specular_K=Ks,
+                    spec_reflect_c=spec_c,
                 )
             )  # (B, HW, 3)
 
@@ -520,21 +537,14 @@ if __name__ == "__main__":
             other_outgoing_directions_rendering_diff = (
                 total_outgoing_color_squared_diff / num_loss_cameras
             )
-            # loss = torch.mean(
-            #     observed_rendering_diff + other_outgoing_directions_rendering_diff
-            # )
-            loss = torch.mean(observed_rendering_diff)
+            loss = torch.mean(
+                observed_rendering_diff + other_outgoing_directions_rendering_diff
+            )
             loss.backward()
 
             # Check gradient norms
             parameters = brdf_normal_model.d3.parameters()
-            norm_type = 2
-            total_norm = torch.norm(
-                torch.stack(
-                    [torch.norm(p.grad.detach(), norm_type) for p in parameters]
-                ),
-                norm_type,
-            )
+            total_norm = extract_gradient_norm(parameters)
 
             optimizer.step()
 
