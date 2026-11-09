@@ -131,6 +131,7 @@ class BatchEvalBlinnPhongBRDFMemSave(Function):
             output=(output, grad_output),
         )
 
+        # TODO: Investigate why I can't use 1024 threads anymore
         block_size_x = 256  # Point / HW dim
         block_size_y = 2  # Batch dim
         block_size_z = 1  # No light dim

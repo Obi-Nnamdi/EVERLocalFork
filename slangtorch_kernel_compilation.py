@@ -1,7 +1,6 @@
-import slangtorch
-
-
 from pathlib import Path
+
+import slangtorch
 
 # BRDF Eval Kernels
 
