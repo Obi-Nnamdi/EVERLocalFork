@@ -383,9 +383,10 @@ if __name__ == "__main__":
     light_phis = lat_lon_incoming_light_coordinates[:, 1]
     sh_solving_lambda = 0.05
     max_sh_degree = 2
+    sh_observation_offset = 0.5  # bias term to match EVER SH conventions
 
     incoming_light_sh_coeffs, residuals = fit_SH_to_data(
-        full_incoming_light_colors,
+        full_incoming_light_colors - sh_observation_offset,
         light_thetas,
         light_phis,
         sh_solving_lambda,
@@ -414,10 +415,14 @@ if __name__ == "__main__":
 
         print(f"{xyz_incoming_light_coordinates.shape = }")
         print(f"{expanded_incoming_light_sh_coeffs.shape = }")
-        sh_evals = eval_sh(
-            max_sh_degree,
-            expanded_incoming_light_sh_coeffs,
-            xyz_incoming_light_coordinates,
+        # PlenOctree EvalSH script doesn't include the offset
+        sh_evals = (
+            eval_sh(
+                max_sh_degree,
+                expanded_incoming_light_sh_coeffs,
+                xyz_incoming_light_coordinates,
+            )
+            + sh_observation_offset
         )
         print(f"{sh_evals.shape = }")
 
