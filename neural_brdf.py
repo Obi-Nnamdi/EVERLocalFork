@@ -313,7 +313,9 @@ class decoder_block(nn.Module):
 
 
 class UNet_BRDF_Normal_Predictor(nn.Module):
-    def __init__(self, img_height: int, img_width: int, incoming_light_features: int) -> None:
+    def __init__(
+        self, img_height: int, img_width: int, incoming_light_features: int
+    ) -> None:
         super().__init__()
 
         self.img_height = img_height
@@ -323,7 +325,9 @@ class UNet_BRDF_Normal_Predictor(nn.Module):
         self.spec_brdf_size = 4
         self.normal_size = 2  # (x, y) components of tangent plane vector
         self.max_spec_c = 16
-        self.starting_input_channels = 4 + incoming_light_features  # (RGBD + Incoming Light)
+        self.starting_input_channels = (
+            4 + incoming_light_features
+        )  # (RGBD + Incoming Light)
 
         # Define U-Net architecture with residual connections on image
         """ Encoder 1 """
@@ -415,9 +419,7 @@ class UNet_BRDF_Normal_Predictor(nn.Module):
         ]
         specular_c_features = output_features[
             :,
-            self.diffuse_brdf_size
-            + self.spec_brdf_size
-            - 1 : self.diffuse_brdf_size
+            self.diffuse_brdf_size + self.spec_brdf_size - 1 : self.diffuse_brdf_size
             + self.spec_brdf_size,
         ]
         normal_features = output_features[:, -self.normal_size :]
@@ -439,7 +441,7 @@ class UNet_BRDF_Normal_Predictor(nn.Module):
         # TODO: refine arguments
         # Best way to structure this...all as one tensor or as multiple?
 
-        output_dict = {
+        output_dict: FullModelOutput = {
             "brdf": {
                 "diffuse": diffuse_brdf_features,
                 # RGB + specular C
@@ -451,11 +453,10 @@ class UNet_BRDF_Normal_Predictor(nn.Module):
             ),  # TODO: don't do this automatically? Basically just adds an extra 1 dimension so it's not too bad though
         }
 
-        return cast(FullModelOutput, output_dict)
+        return output_dict
 
 
 class Tiny_BRDF_Normal_Predictor(nn.Module):
-
     def __init__(self, img_height: int, img_width: int) -> None:
         super().__init__()
 
@@ -530,9 +531,7 @@ class Tiny_BRDF_Normal_Predictor(nn.Module):
         ]
         specular_c_features = img_features[
             :,
-            self.diffuse_brdf_size
-            + self.spec_brdf_size
-            - 1 : self.diffuse_brdf_size
+            self.diffuse_brdf_size + self.spec_brdf_size - 1 : self.diffuse_brdf_size
             + self.spec_brdf_size,
         ]
         normal_features = img_features[:, -self.normal_size :]
@@ -564,6 +563,83 @@ class Tiny_BRDF_Normal_Predictor(nn.Module):
             "normal": create_normals_from_tangent_space(
                 normal_features
             ),  # TODO: don't do this automatically? Basically just adds an extra 1 dimension so it's not too bad though
+        }
+
+        return output_dict
+
+
+class Direct_BRDF_Normal_Predictor(nn.Module):
+    """
+    Directly optimize tensors for Diffuse, Specular, and Normal values with no neural network.
+    """
+
+    def __init__(self, img_height: int, img_width: int, num_cameras: int) -> None:
+        super().__init__()
+
+        self.img_height = img_height
+        self.img_width = img_width
+
+        self.diffuse_brdf_size = 3
+        self.spec_color_size = 3
+        self.spec_shininess_size = 1
+        self.normals_size = 2  # (x, y) components of tangent plane vector
+        self.num_cameras = num_cameras
+
+        # Other values just to maintain parity w/ other predictors
+        self.max_spec_c = 16
+
+        # Define buffers for direct BRDF optimization
+        starting_brdf_value = 0.5  # "Middle gray" point for better optimization
+        diff_starting_tensor = torch.full(
+            (num_cameras, self.diffuse_brdf_size, img_height, img_width),
+            starting_brdf_value,
+            dtype=torch.float,
+        )
+        self.diffuse_buffer = nn.Parameter(diff_starting_tensor)
+        self.specular_color_buffer = nn.Parameter(
+            torch.full_like(diff_starting_tensor, starting_brdf_value)
+        )
+
+        # Shininess buffer
+        shininess_starting_tensor = torch.ones(
+            (num_cameras, self.spec_shininess_size, img_height, img_width),
+            dtype=torch.float,
+        )
+        self.shininess_buffer = nn.Parameter(shininess_starting_tensor)
+
+        # Normals buffer (tangent space)
+        normals_starting_tensor = torch.zeros(
+            (num_cameras, self.normals_size, img_height, img_width),
+        )
+        self.normals_buffer = nn.Parameter(normals_starting_tensor)
+
+        # TODO: Define activation functions on BRDFs + Normals for testing
+
+    def forward(self, image: torch.Tensor) -> FullModelOutput:
+        """
+        Input:
+            image: (N, C, H, W)
+
+        Output:
+            brdf:
+                diffuse: (N, 3, H, W)
+                specular: (N, 3, H, W)
+                specular_c: (N, 1, H, W)
+            normal:
+                (N, 3, H, W)
+        """
+
+        # Directly return our static buffers
+        output_dict: FullModelOutput = {
+            "brdf": {
+                "diffuse": self.diffuse_buffer,
+                # RGB + specular C
+                "specular": self.specular_color_buffer,
+                "specular_c": self.shininess_buffer,
+            },
+            "normal": create_normals_from_tangent_space(
+                self.normals_buffer
+            ),  # TODO: Handle this on loss function side w/ custom kernel that supplies the "1" dimension
         }
 
         return output_dict
@@ -754,7 +830,9 @@ if __name__ == "__main__":
     )
 
     normal_predictor = UNet_BRDF_Normal_Predictor(
-        rendering_cam.image_height, rendering_cam.image_width
+        rendering_cam.image_height,
+        rendering_cam.image_width,
+        0,  # not adding incoming light
     )
     normal_predictor = normal_predictor.cuda()
     output = normal_predictor(
@@ -771,9 +849,7 @@ if __name__ == "__main__":
     ].T.clone()  # (P, 3)
     spec_c = output["brdf"]["specular_c"][
         0, :, chosen_point[0], chosen_point[1]
-    ].T.squeeze(
-        1
-    )  # (P,)
+    ].T.squeeze(1)  # (P,)
     normal = output["normal"][
         0, :, chosen_point[0], chosen_point[1]
     ].T.clone()  # (P, 3)
