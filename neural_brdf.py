@@ -28,6 +28,7 @@ from slangtorch_kernel_compilation import brdf_eval_kernels
 from utils.general_utils import safe_state
 
 
+# TODO: Should be moved to other file
 class EvalBlinnPhongBRDF(Function):
     """
     Evaluate the given Blinn-Phong BRDFs with the given incoming light, matching each point to its corresponding incoming light.
@@ -140,7 +141,7 @@ class EvalBlinnPhongBRDF(Function):
         )
 
         block_size_x = 64
-        block_size_y = 16
+        block_size_y = 8
         brdf_eval_kernel_bwd.launchRaw(
             blockSize=(block_size_x, block_size_y, 1),
             gridSize=(
@@ -182,13 +183,13 @@ def eval_blinn_phong_outgoing_radiance(
     Evaluate the given Blinn-Phong BRDFs (specified with diffuse, specular, and specular_c coeffs) with the given incoming light,
     matching each point to its corresponding incoming light.
 
-    Uses :class:`EvalBlinPhongBRDF` in the backend.
+    Uses :class:`EvalBlinnPhongBRDF` in the backend.
 
     Inputs:
         incoming_light_colors: (P, N, 3) RGB values of incoming light for each direction
         incoming_light_dirs: (N, 3) Normalized directions oriented towards the light source in world space
-        normal: (P, 3) Surface normals in world space for each of P points
         outgoing_directions: (P, 3) Outgoing (view) normalized direction of radiance, in world space (head at the camera, tip at the surface point) for each point.
+        normal: (P, 3) Surface normals in world space for each of P points
         diffuse_K: (P, 3) RGB values of diffuse coeffients (0 - 1 scale, but values can be greater or lower).
         specular_K: (P, 3) RGB values of specular coeffients (0 - 1).
         spec_reflect_c: (P,) Surface "shininess" specified as the specular exponent.
@@ -232,6 +233,11 @@ def eval_blinn_phong_outgoing_radiance(
     )  # (P, N, 3)
 
     # Take masked mean across positive (not inf) normal lighting directions (collapsing "N" dimension)
+    # return outgoing_radiance_inf_mask[:, 2, :].float()
+    num_positive_directions = N // 2  # Uniform averaging to avoid edge artifacts
+
+    return torch.sum(positive_masked_radiance, dim=1) / num_positive_directions
+
     return torch.sum(positive_masked_radiance, dim=1) / torch.sum(
         ~outgoing_radiance_inf_mask, dim=1
     )
@@ -677,7 +683,7 @@ def transform_normals_to_world_space(
 
     # No scaling component of the camera to world matrix, can simply rotate the ray directions
     # without worrying about normal scaling issues
-    world_normals = camera_normals @ camera_to_world_rot
+    world_normals = camera_normals @ camera_to_world_rot.to(camera_normals.device)
 
     return world_normals
 

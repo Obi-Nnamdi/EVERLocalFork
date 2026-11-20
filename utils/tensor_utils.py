@@ -42,13 +42,19 @@ def npc_tensor_to_nchw(input_tensor: torch.Tensor, H: int, W: int) -> torch.Tens
 def p_by_c_tensor_to_chw(input_tensor: torch.Tensor, H: int, W: int) -> torch.Tensor:
     """
     Converts a (P, C) tensor into a (C, H, W) tensor, assuming that P was created by collapsing the (H,W) dimensions.
-    E.g. (H * W, 3) -> (1, 3, H, W)
+    E.g. (H * W, 3) -> (3, H, W)
     """
     P, C = input_tensor.shape
     input_tensor = input_tensor.reshape(H, W, C)  # (H, W, C)
     input_tensor = input_tensor.permute(2, 0, 1)  # (C, H, W)
 
     return input_tensor
+
+def chw_tensor_to_hwc(input_tensor: torch.Tensor) -> torch.Tensor:
+    """
+    Converts a (C, H, W) tensor into a (H, W, C) tensor via pytorch permutation.
+    """
+    return input_tensor.permute(1, 2, 0)  # (C, H, W)
 
 
 def pretty_display_normal_tensor(normal_tensor: torch.Tensor) -> torch.Tensor:
@@ -70,3 +76,14 @@ def full_print_tensor(tensor: torch.Tensor):
     torch.set_printoptions(profile="full")
     print(tensor)
     torch.set_printoptions(profile="default")
+
+
+def convert_pc_tensor_to_matplotlib_image_format(tensor: torch.Tensor, H: int, W: int):
+    """
+    (P, C) tensor into matplotlib's (H, W, C) preferred format, with the image clipped and put on CPU.
+    """
+    target_output_image = p_by_c_tensor_to_chw(tensor, H, W)
+    target_output_image = (
+        chw_tensor_to_hwc(target_output_image).detach().clip(0, 1).cpu()
+    )
+    return target_output_image

@@ -1,40 +1,48 @@
 # TODO: Load Gaussian Model, be able to render it with a basic camera position
-# From there, be able to intersect rays with a sphere, 
+# From there, be able to intersect rays with a sphere,
 
-from pathlib import Path
-import torch
-from random import randint
-from raytracing import get_rendering_cam, load_gaussian_model
-from utils.loss_utils import ssim
-import sys
-from scene import Scene, GaussianModel, camera_to_JSON
-from utils.general_utils import safe_state
-import uuid
-from tqdm import tqdm
-from utils.image_utils import psnr
-from argparse import ArgumentParser
-from arguments import ModelParams, PipelineParams, OptimizationParams
-from icecream import ic
-import random
 import math
-import cv2
+import random
+import sys
 import time
-from gaussian_renderer.fast_renderer import FastRenderer
-from gaussian_renderer import render, network_gui
+import uuid
+from argparse import ArgumentParser
+from pathlib import Path
+from random import randint
 
+import cv2
 
 # Graphing
 import matplotlib
-matplotlib.use('Agg') # headless mode
+import torch
+from icecream import ic
+from tqdm import tqdm
+
+from arguments import ModelParams, OptimizationParams, PipelineParams
+from gaussian_renderer import network_gui, render
+from gaussian_renderer.fast_renderer import FastRenderer
+from raytracing import get_rendering_cam, load_gaussian_model
+from scene import GaussianModel, Scene, camera_to_JSON
+from utils.general_utils import safe_state
+from utils.image_utils import psnr
+from utils.loss_utils import ssim
+
+matplotlib.use("Agg")  # headless mode
 import matplotlib.pyplot as plt
 import numpy as np
 
 # Slangtorch Kernels
 import slangtorch
-kernels = slangtorch.loadModule(
-    str(Path(__file__).parent / "ever/splinetracers/slang/sphere_raytrace.slang")
-)
-def render_gaussian_model_and_chromesphere(gaussians: GaussianModel, model_params: ModelParams, opt_params: OptimizationParams, pipe_params: PipelineParams) -> torch.Tensor:
+
+from slangtorch_kernel_compilation import sphere_raytracing_kernels as kernels
+
+
+def render_gaussian_model_and_chromesphere(
+    gaussians: GaussianModel,
+    model_params: ModelParams,
+    opt_params: OptimizationParams,
+    pipe_params: PipelineParams,
+) -> torch.Tensor:
     bg_color = [1, 1, 1] if model_params.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
@@ -56,7 +64,6 @@ def render_gaussian_model_and_chromesphere(gaussians: GaussianModel, model_param
     # print(f"{rendering_cam.world_view_transform = }")
     # print(f"{rendering_cam.full_proj_transform = }")
 
-
     preview_factor = 4
     image_width = rendering_cam.image_width
     image_height = rendering_cam.image_height
@@ -69,7 +76,7 @@ def render_gaussian_model_and_chromesphere(gaussians: GaussianModel, model_param
     renderer = FastRenderer(rendering_cam, gaussians, pipe_params.enable_GLO)
     renderer.set_camera(rendering_cam)
 
-    #Render sphere
+    # Render sphere
     rays_o, rays_d = renderer.get_rays(rendering_cam)
 
     sphere_center_translation = torch.zeros((1, 3), device="cuda")
@@ -79,14 +86,15 @@ def render_gaussian_model_and_chromesphere(gaussians: GaussianModel, model_param
     sphere_center = avg_position + avg_direction * 2
     # Trying a custom value for sphere center
     # sphere_center = torch.tensor([.12, -5.57, -7.3947], device="cuda").reshape(1,3)
-    sphere_radius = .5
+    sphere_radius = 0.5
     # print(f"{sphere_center  = }")
     # print(f"{avg_position  = }")
     # print(f"{avg_direction  = }")
 
-    
     sphere_intersect_st = time.time()
-    T_vals = torch.full((rays_o.size(0), 1), float("inf"), device="cuda") # Any non-intersections default to "inf" as their t value
+    T_vals = torch.full(
+        (rays_o.size(0), 1), float("inf"), device="cuda"
+    )  # Any non-intersections default to "inf" as their t value
 
     # Slang kernel params for launching processes
     block_size = 64
@@ -94,10 +102,13 @@ def render_gaussian_model_and_chromesphere(gaussians: GaussianModel, model_param
 
     # Intersect the sphere
     kernels.intersect_sphere(
-        ray_origins=rays_o, ray_directions=rays_d, sphere_center=sphere_center, sphere_radius=sphere_radius, T_values=T_vals
+        ray_origins=rays_o,
+        ray_directions=rays_d,
+        sphere_center=sphere_center,
+        sphere_radius=sphere_radius,
+        T_values=T_vals,
     ).launchRaw(
-        blockSize=(block_size, 1, 1),
-        gridSize=(num_pixels // block_size + 1, 1, 1)
+        blockSize=(block_size, 1, 1), gridSize=(num_pixels // block_size + 1, 1, 1)
     )
 
     # T_vals = intersect_sphere(rays_o, rays_d, sphere_center, sphere_radius) # (h*w) x 1
@@ -107,25 +118,34 @@ def render_gaussian_model_and_chromesphere(gaussians: GaussianModel, model_param
     bounce_ray_d = torch.full_like(rays_d, 0)
 
     kernels.bounce_off_sphere(
-        ray_origins=rays_o, ray_directions=rays_d, sphere_center=sphere_center, T_values=T_vals,
-        bounce_ray_origins=bounce_ray_o, bounce_ray_directions=bounce_ray_d
+        ray_origins=rays_o,
+        ray_directions=rays_d,
+        sphere_center=sphere_center,
+        T_values=T_vals,
+        bounce_ray_origins=bounce_ray_o,
+        bounce_ray_directions=bounce_ray_d,
     ).launchRaw(
-        blockSize=(block_size, 1, 1),
-        gridSize=(num_pixels // block_size + 1, 1, 1)
+        blockSize=(block_size, 1, 1), gridSize=(num_pixels // block_size + 1, 1, 1)
     )
 
     # bounce_ray_o, bounce_ray_d = bounce_off_sphere(rays_o, rays_d, T_vals, sphere_center)
-    print(f"Took {time.time() - sphere_intersect_st}s to intersect sphere") 
+    print(f"Took {time.time() - sphere_intersect_st}s to intersect sphere")
 
     # See camera, spehre, and bounce rays if debugging.
     # plot_rays_and_sphere(rays_o, rays_d, sphere_center, sphere_radius, T_vals, bounce_ray_o, bounce_ray_d)
 
     # Render bounce rays
     # TODO: Can use rendering t_max for creating sphere?
-    bounced_ray_output = renderer.trace_rays(bounce_ray_o, bounce_ray_d, rendering_cam, 0, 1e7)
-    bounce_image = bounced_ray_output['color'][:, :3].T.reshape(3, rendering_cam.image_height, rendering_cam.image_width)
+    bounced_ray_output = renderer.trace_rays(
+        bounce_ray_o, bounce_ray_d, rendering_cam, 0, 1e7
+    )
+    bounce_image = bounced_ray_output["color"][:, :3].T.reshape(
+        3, rendering_cam.image_height, rendering_cam.image_width
+    )
 
-    T_vals = T_vals.reshape(1, rendering_cam.image_height, rendering_cam.image_width) # (1, h, w)
+    T_vals = T_vals.reshape(
+        1, rendering_cam.image_height, rendering_cam.image_width
+    )  # (1, h, w)
 
     # Render quickly
     st = time.time()
@@ -133,38 +153,65 @@ def render_gaussian_model_and_chromesphere(gaussians: GaussianModel, model_param
     # TODO: Use opposite of t_min (t_max?) for creating chromesphere?
     # t_max parameter would need to become a tensor basically...kinda weird
     torch.cuda.empty_cache()
-    base_image = renderer.render(rendering_cam, gaussians, background, include_depth=True) # (4, h, w)
-    color_image = base_image[:3, :, :] # (3, h, w)
-    depth_image = base_image[3, :, :] # (h, w)
+    base_image = renderer.render(
+        rendering_cam, gaussians, background, include_depth=True
+    )  # (4, h, w)
+    color_image = base_image[:3, :, :]  # (3, h, w)
+    depth_image = base_image[3, :, :]  # (h, w)
 
     # Add bounce lighting to the image
-    masked_image = color_image * torch.isinf(T_vals) # Mask out part that hits the sphere
-    image = masked_image + bounce_image # Add in bounce lighting
-
+    masked_image = color_image * torch.isinf(
+        T_vals
+    )  # Mask out part that hits the sphere
+    image = masked_image + bounce_image  # Add in bounce lighting
 
     # debug_depth_image(model_params, camera_index, rays_o, rays_d, color_image, depth_image)
 
-    print(f"Took {time.time()-st}s to render frame.")
+    print(f"Took {time.time() - st}s to render frame.")
 
     # Save un-scaled base image for visualization
-    base_image = (torch.clamp(base_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy()
+    base_image = (
+        (torch.clamp(base_image, min=0, max=1.0) * 255)
+        .byte()
+        .permute(1, 2, 0)
+        .contiguous()
+        .cpu()
+        .numpy()
+    )
 
     base_image = cv2.cvtColor(base_image, cv2.COLOR_BGR2RGB)
 
-    cv2.imwrite(Path(model_params.model_path) / f"base_image_camera_{camera_index}.png", base_image)
+    cv2.imwrite(
+        Path(model_params.model_path) / f"base_image_camera_{camera_index}.png",
+        base_image,
+    )
 
     # Convert to 8-bit and save as png
-    image = (torch.clamp(image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy()
+    image = (
+        (torch.clamp(image, min=0, max=1.0) * 255)
+        .byte()
+        .permute(1, 2, 0)
+        .contiguous()
+        .cpu()
+        .numpy()
+    )
     image = cv2.resize(image, (image_width, image_height))
 
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-    cv2.imwrite(Path(model_params.model_path) / f"chromesphere_output_camera_{camera_index}.png", image)
-    
+    cv2.imwrite(
+        Path(model_params.model_path)
+        / f"chromesphere_output_camera_{camera_index}.png",
+        image,
+    )
+
     torch.cuda.empty_cache()
     return image
 
-def debug_depth_image(model_params, camera_index, rays_o, rays_d, color_image, depth_image):
+
+def debug_depth_image(
+    model_params, camera_index, rays_o, rays_d, color_image, depth_image
+):
     # Save depth map out in a few formats
     clamped_depth = torch.clamp(depth_image.cpu(), min=0, max=100.0)
 
@@ -173,35 +220,59 @@ def debug_depth_image(model_params, camera_index, rays_o, rays_d, color_image, d
     plt.imshow(clamped_depth)
     plt.colorbar()
     plt.subplot(2, 1, 2)
-    plt.imshow((torch.clamp(color_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu())
-    plt.savefig(Path(model_params.model_path) / f"depth_output_camera_{camera_index}.png")
+    plt.imshow(
+        (torch.clamp(color_image, min=0, max=1.0) * 255)
+        .byte()
+        .permute(1, 2, 0)
+        .contiguous()
+        .cpu()
+    )
+    plt.savefig(
+        Path(model_params.model_path) / f"depth_output_camera_{camera_index}.png"
+    )
 
     depth_vis = cv2.normalize(clamped_depth.numpy(), None, 0, 255, cv2.NORM_MINMAX)
     depth_vis = np.uint8(depth_vis)
-    cv2.imwrite(Path(model_params.model_path) / f"raw_depth_{camera_index}.png", depth_vis)
+    cv2.imwrite(
+        Path(model_params.model_path) / f"raw_depth_{camera_index}.png", depth_vis
+    )
 
     # Raw number outputs, really cumbersome
     # np.savetxt(Path(model_params.model_path) / f"depth_numbers_{camera_index}.txt", depth_image.cpu().numpy())
 
-
     # Check if the depth map values are actual t values from the ray directions / origins
-    depth_image_unrolled = depth_image.reshape(-1, 1) # (h*w, 1)
+    depth_image_unrolled = depth_image.reshape(-1, 1)  # (h*w, 1)
 
     xyz_points = rays_o + rays_d * depth_image_unrolled.to(device="cuda")
-    np.save(Path(model_params.model_path) / f"camera_pc_{camera_index}.npy", xyz_points.cpu().numpy())
+    np.save(
+        Path(model_params.model_path) / f"camera_pc_{camera_index}.npy",
+        xyz_points.cpu().numpy(),
+    )
 
-def plot_rays_and_sphere(rays_o: torch.Tensor, rays_d: torch.Tensor, sphere_center: torch.Tensor, sphere_radius: float, 
-                         T_vals: torch.Tensor, bounce_ray_o: torch.Tensor, bounce_ray_d: torch.Tensor):
+
+def plot_rays_and_sphere(
+    rays_o: torch.Tensor,
+    rays_d: torch.Tensor,
+    sphere_center: torch.Tensor,
+    sphere_radius: float,
+    T_vals: torch.Tensor,
+    bounce_ray_o: torch.Tensor,
+    bounce_ray_d: torch.Tensor,
+):
     """
     Create matplotlib plots of the original camera rays, sphere, and the rays that bounced off of it.
     """
-    ax = plot_ray_o_and_d(torch.cat([rays_o[0:1, :], bounce_ray_o]), torch.cat([torch.zeros_like(rays_d[0:1, :]), bounce_ray_d]), 
-                          render_fig=False, alpha=.5, label="Bounced rays")
+    ax = plot_ray_o_and_d(
+        torch.cat([rays_o[0:1, :], bounce_ray_o]),
+        torch.cat([torch.zeros_like(rays_d[0:1, :]), bounce_ray_d]),
+        render_fig=False,
+        alpha=0.5,
+        label="Bounced rays",
+    )
     sphere_center_list = sphere_center.cpu().ravel().tolist()
-    
-    
+
     # plt.axis('equal')
-    ax.set_aspect('equal')
+    ax.set_aspect("equal")
     fig = plt.gcf()
     fig.set_size_inches(18.5, 10.5)
 
@@ -212,20 +283,30 @@ def plot_rays_and_sphere(rays_o: torch.Tensor, rays_d: torch.Tensor, sphere_cent
     y = sphere_radius * np.outer(np.sin(u), np.sin(v)) + sphere_center_list[1]
     z = sphere_radius * np.outer(np.ones(np.size(u)), np.cos(v)) + sphere_center_list[2]
 
-    ax.plot_surface(x, y, z, alpha=.7, color='y', label='Sphere')
-    ax.scatter(*sphere_center_list, marker="X", s=60, label='Sphere Center')
+    ax.plot_surface(x, y, z, alpha=0.7, color="y", label="Sphere")
+    ax.scatter(*sphere_center_list, marker="X", s=60, label="Sphere Center")
 
     # Show bouncing rays:
-    bouncing_ray_indices = torch.nonzero(~torch.isinf(T_vals).ravel()).ravel() # (B,)
-    T_vals_valid = T_vals[bouncing_ray_indices].cpu() # (B x 1)
-    valid_bouncing_ray_os = rays_o[bouncing_ray_indices].cpu() # (B x 3)
-    valid_bouncing_ray_ds = rays_d[bouncing_ray_indices].cpu() # (B x 3)
-    valid_bouncing_ray_ds = valid_bouncing_ray_ds * T_vals_valid # (B x 3)
+    bouncing_ray_indices = torch.nonzero(~torch.isinf(T_vals).ravel()).ravel()  # (B,)
+    T_vals_valid = T_vals[bouncing_ray_indices].cpu()  # (B x 1)
+    valid_bouncing_ray_os = rays_o[bouncing_ray_indices].cpu()  # (B x 3)
+    valid_bouncing_ray_ds = rays_d[bouncing_ray_indices].cpu()  # (B x 3)
+    valid_bouncing_ray_ds = valid_bouncing_ray_ds * T_vals_valid  # (B x 3)
 
-    ax.quiver3D(valid_bouncing_ray_os[:, 0], valid_bouncing_ray_os[:, 1], valid_bouncing_ray_os[:, 2],
-                valid_bouncing_ray_ds[:, 0], valid_bouncing_ray_ds[:, 1], valid_bouncing_ray_ds[:, 2],
-                color='g', arrow_length_ratio=.05, linewidth=1.2, label='Camera Rays', alpha=.5)
-    
+    ax.quiver3D(
+        valid_bouncing_ray_os[:, 0],
+        valid_bouncing_ray_os[:, 1],
+        valid_bouncing_ray_os[:, 2],
+        valid_bouncing_ray_ds[:, 0],
+        valid_bouncing_ray_ds[:, 1],
+        valid_bouncing_ray_ds[:, 2],
+        color="g",
+        arrow_length_ratio=0.05,
+        linewidth=1.2,
+        label="Camera Rays",
+        alpha=0.5,
+    )
+
     # Produce Legend.
     ax.legend()
 
@@ -234,20 +315,27 @@ def plot_rays_and_sphere(rays_o: torch.Tensor, rays_d: torch.Tensor, sphere_cent
     for azim in azim_angles:
         # Set view
         ax.view_init(azim=azim)
-        
-        fig_name=f"combined_rayo_output_azim_{azim.item():.2f}.png"
+
+        fig_name = f"combined_rayo_output_azim_{azim.item():.2f}.png"
         save_path = Path(__file__).parent / "graphs" / fig_name
         plt.savefig(save_path)
         print(f"Saved output figure at {str(save_path)}")
 
 
-def plot_ray_o_and_d(ray_o: torch.Tensor, ray_d: torch.Tensor, render_fig = True, fig_name = "test_rayo_output.png", **quiver_kwargs):
+def plot_ray_o_and_d(
+    ray_o: torch.Tensor,
+    ray_d: torch.Tensor,
+    render_fig=True,
+    fig_name="test_rayo_output.png",
+    **quiver_kwargs,
+):
     ray_o, ray_d = ray_o.cpu(), ray_d.cpu()
     fig = plt.figure()
-    ax = fig.add_subplot(projection='3d')
+    ax = fig.add_subplot(projection="3d")
 
-
-    ax.scatter(ray_o[:, 0], ray_o[:, 1], ray_o[:, 2], marker="o", c=ray_o[:, 2], cmap='tab10')
+    ax.scatter(
+        ray_o[:, 0], ray_o[:, 1], ray_o[:, 2], marker="o", c=ray_o[:, 2], cmap="tab10"
+    )
     ax.set_title(f"Generated Ray Origins and Directions")
 
     ax.set_xlabel("X")
@@ -257,7 +345,18 @@ def plot_ray_o_and_d(ray_o: torch.Tensor, ray_d: torch.Tensor, render_fig = True
 
     # Plot output normals:
     # https://matplotlib.org/stable/gallery/mplot3d/quiver3d.html
-    ax.quiver3D(ray_o[:, 0], ray_o[:, 1], ray_o[:, 2], ray_d[:, 0], ray_d[:, 1], ray_d[:, 2], length = 0.5, cmap='tab10', arrow_length_ratio=.2, **quiver_kwargs)
+    ax.quiver3D(
+        ray_o[:, 0],
+        ray_o[:, 1],
+        ray_o[:, 2],
+        ray_d[:, 0],
+        ray_d[:, 1],
+        ray_d[:, 2],
+        length=0.5,
+        cmap="tab10",
+        arrow_length_ratio=0.2,
+        **quiver_kwargs,
+    )
 
     if render_fig:
         save_path = Path(__file__).parent / fig_name
@@ -267,7 +366,12 @@ def plot_ray_o_and_d(ray_o: torch.Tensor, ray_d: torch.Tensor, render_fig = True
     return ax
 
 
-def intersect_sphere(ray_o: torch.Tensor, ray_d: torch.Tensor, sphere_center: torch.Tensor, sphere_radius: float) -> torch.Tensor:
+def intersect_sphere(
+    ray_o: torch.Tensor,
+    ray_d: torch.Tensor,
+    sphere_center: torch.Tensor,
+    sphere_radius: float,
+) -> torch.Tensor:
     """
     Intersect a group of rays with a sphere, returning the t_min of each ray that hits it (and the normal)
 
@@ -280,17 +384,16 @@ def intersect_sphere(ray_o: torch.Tensor, ray_d: torch.Tensor, sphere_center: to
     """
     # Following https://www.scratchapixel.com/lessons/3d-basic-rendering/minimal-ray-tracer-rendering-simple-shapes/ray-sphere-intersection.html
 
-
     # Initial test to see if sphere is in same direction as ray
     L = sphere_center - ray_o
-    T_center = col_wise_dot_product(ray_d, L) # (N,)
+    T_center = col_wise_dot_product(ray_d, L)  # (N,)
 
     # print(T_center < 0)
     # print(torch.sum(T_center < 0))
 
     # Distance from ray to sphere center
-    L_distances = torch.linalg.norm(L, dim=1) # (N,)
-    D_squared = L_distances**2 - T_center**2 # (N,)
+    L_distances = torch.linalg.norm(L, dim=1)  # (N,)
+    D_squared = L_distances**2 - T_center**2  # (N,)
 
     sphere_rad_squared = sphere_radius**2
     # print(D_squared < sphere_rad_squared)
@@ -304,19 +407,26 @@ def intersect_sphere(ray_o: torch.Tensor, ray_d: torch.Tensor, sphere_center: to
     # T vals greater than 0 are only considered (filled with inf for comparison otherwise)
     t_min = 0
     T_zero = torch.where(T_zero < t_min, float("inf"), T_zero)
-    T_one = torch.where(T_one < t_min, float("inf"),  T_one)
+    T_one = torch.where(T_one < t_min, float("inf"), T_one)
 
     # Need to be careful about NaNs here (even before minimum computation)
     # torch.nan_to_num?
     T_vals = torch.minimum(T_zero, T_one)
     T_vals = torch.nan_to_num(T_vals, nan=float("inf"), posinf=float("inf"))
 
-    return T_vals.reshape(-1, 1) 
+    return T_vals.reshape(-1, 1)
+
 
 def col_wise_dot_product(arr_1, arr_2, keepdim=False):
-    return torch.sum(arr_1 * arr_2, dim=1, keepdim=keepdim)# (N x 1)
+    return torch.sum(arr_1 * arr_2, dim=1, keepdim=keepdim)  # (N x 1)
 
-def bounce_off_sphere(ray_o: torch.Tensor, ray_d: torch.Tensor, t_vals: torch.Tensor, sphere_center: torch.Tensor):
+
+def bounce_off_sphere(
+    ray_o: torch.Tensor,
+    ray_d: torch.Tensor,
+    t_vals: torch.Tensor,
+    sphere_center: torch.Tensor,
+):
     """
     Returns bounce_ray_o and bounce_ray_d's for intersections with spheres with incoming rays at the given t_vals.
 
@@ -329,17 +439,20 @@ def bounce_off_sphere(ray_o: torch.Tensor, ray_d: torch.Tensor, t_vals: torch.Te
     TODO: Could also be a slang kernel.
     """
     # Initial hit position (bounce ray origin)
-    hit_pos = ray_o + ray_d * t_vals # n x 3
+    hit_pos = ray_o + ray_d * t_vals  # n x 3
 
     # Normalize sphere normals
-    hit_normal_unnorm = hit_pos - sphere_center # n x 3
-    hit_normal = hit_normal_unnorm / torch.linalg.norm(hit_normal_unnorm, dim=1, keepdim=True)
+    hit_normal_unnorm = hit_pos - sphere_center  # n x 3
+    hit_normal = hit_normal_unnorm / torch.linalg.norm(
+        hit_normal_unnorm, dim=1, keepdim=True
+    )
 
     # Reflect rays (bounce ray direction)
-    reflected_rays = ray_d - 2 * hit_normal * (col_wise_dot_product(ray_d, hit_normal, keepdim=True))
+    reflected_rays = ray_d - 2 * hit_normal * (
+        col_wise_dot_product(ray_d, hit_normal, keepdim=True)
+    )
 
     return hit_pos, reflected_rays
-
 
 
 if __name__ == "__main__":
@@ -348,19 +461,23 @@ if __name__ == "__main__":
     lp = ModelParams(parser)
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
-    parser.add_argument('--ip', type=str, default="127.0.0.1")
-    parser.add_argument('--port', type=int, default=6009)
-    parser.add_argument('--debug_from', type=int, default=-1)
-    parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    parser.add_argument("--ip", type=str, default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=6009)
+    parser.add_argument("--debug_from", type=int, default=-1)
+    parser.add_argument("--detect_anomaly", action="store_true", default=False)
+    parser.add_argument(
+        "--test_iterations", nargs="+", type=int, default=[7_000, 30_000]
+    )
+    parser.add_argument(
+        "--save_iterations", nargs="+", type=int, default=[7_000, 30_000]
+    )
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
-    parser.add_argument("--start_checkpoint", type=str, default = None)
+    parser.add_argument("--start_checkpoint", type=str, default=None)
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     # args.checkpoint_iterations.append(args.iterations)
-    
+
     print("Optimizing " + args.model_path)
 
     # Initialize system state (RNG)
@@ -368,10 +485,14 @@ if __name__ == "__main__":
 
     # Load Gaussians
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    gaussians = load_gaussian_model(lp.extract(args), op.extract(args), args.start_checkpoint)
+    gaussians = load_gaussian_model(
+        lp.extract(args), op.extract(args), args.start_checkpoint
+    )
 
     print(f"Loaded Gaussian, Active SH Degree: {gaussians.active_sh_degree}")
 
-    render_gaussian_model_and_chromesphere(gaussians,lp.extract(args), op.extract(args), pp.extract(args))
+    render_gaussian_model_and_chromesphere(
+        gaussians, lp.extract(args), op.extract(args), pp.extract(args)
+    )
 
     # All done

@@ -2,42 +2,39 @@
 Train a BRDF prediction model with fake data (fake incoming light, fake BRDF values for each pixel).
 """
 
-from arguments import (
-    ModelParams,
-    PipelineParams,
-    OptimizationParams,
-    BRDFOptmizationParams,
-)
+import sys
 from argparse import ArgumentParser
-from utils.tensor_utils import p_by_c_tensor_to_chw, unsqueezed_chw_tensor_to_p_by_c, nchw_tensor_to_npc, size_of_tensor_bytes
+from pathlib import Path
+from typing import cast
+
+# Graphing
+import matplotlib
+import torch
+from torch import nn
+from tqdm import tqdm
+
+from arguments import (
+    BRDFOptmizationParams,
+    ModelParams,
+    OptimizationParams,
+    PipelineParams,
+)
 from batch_eval_blinn_phong_brdf_mem_save import (
     batch_eval_blinn_phong_outgoing_radiance_with_probe_mem_save,
     batch_eval_blinn_phong_varying_outgoing_radiance_with_probe,
 )
 from neural_brdf import (
-    Tiny_BRDF_Normal_Predictor,
-    eval_blinn_phong_outgoing_radiance,
     FullModelOutput,
+    Tiny_BRDF_Normal_Predictor,
 )
-
 from raytracing import (
     generate_spherical_rays,
 )
 from utils.general_utils import safe_state
-import sys
-from tqdm import tqdm
-import time
-
-import torch
-from torch import nn
-
-from pathlib import Path
-
-from typing import cast
-
-
-# Graphing
-import matplotlib
+from utils.tensor_utils import (
+    nchw_tensor_to_npc,
+    p_by_c_tensor_to_chw,
+)
 
 matplotlib.use("Agg")  # headless mode
 import matplotlib.pyplot as plt
@@ -82,9 +79,7 @@ if __name__ == "__main__":
     outgoing_light_sphere_divisions = 5
 
     # How many points will we be calculating incoming light for? (P dimension)
-    num_points = (
-        global_image_height * global_image_width
-    )
+    num_points = global_image_height * global_image_width
 
     # How many points are we using to simulate the probe for incoming / outgoing light
     num_probe_points = 100
@@ -109,7 +104,9 @@ if __name__ == "__main__":
     )  # (O, 3)
 
     # Generate a simple point query tensor (strech probe point indices across actual points dim)
-    light_query_mapping = torch.linspace(0, num_probe_points - 1, num_points, dtype=torch.int32)[None, :].cuda() # (1, P)
+    light_query_mapping = torch.linspace(
+        0, num_probe_points - 1, num_points, dtype=torch.int32
+    )[None, :].cuda()  # (1, P)
 
     # Generate fake incoming light data that we'll always use
     constant_incoming_light = True
@@ -137,7 +134,9 @@ if __name__ == "__main__":
     light_brightening_factor = 1.2
     probe_incoming_light_color = probe_incoming_light_color * light_brightening_factor
 
-    probe_outgoing_light_dirs = -test_outgoing_sphere_d # Invert sphere directions for outgoing light
+    probe_outgoing_light_dirs = (
+        -test_outgoing_sphere_d
+    )  # Invert sphere directions for outgoing light
     # Create outgoing light color residuals
     residual_factor = 20
     if constant_outgoing_light:
@@ -197,9 +196,7 @@ if __name__ == "__main__":
         golden_diffuse_color,
         golden_specular_color,
         golden_specular_c,
-    )[
-        0
-    ]  # (P, 3)
+    )[0]  # (P, 3)
 
     print(f"{rendered_colors = }")
     print(f"{light_query_mapping = }")
@@ -217,9 +214,7 @@ if __name__ == "__main__":
 
     subsampled_rendered_colors = rendered_colors[full_rendered_colors_to_probe_idx][
         :, None, :
-    ].broadcast_to(
-        probe_outgoing_light_color.size()
-    )  # (Pr, O, 3)
+    ].broadcast_to(probe_outgoing_light_color.size())  # (Pr, O, 3)
 
     probe_outgoing_light_color = probe_outgoing_light_color + subsampled_rendered_colors
     ####

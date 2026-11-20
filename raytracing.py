@@ -1,32 +1,28 @@
-from pathlib import Path
-
-from arguments import ModelParams, OptimizationParams
-from scene import GaussianModel
-from scene.dataset_readers import ProjectionType
-from utils.graphics_utils import focal2fov, getProjectionMatrix
-from utils.system_utils import searchForMaxIteration
-from arguments import ModelParams, PipelineParams, OptimizationParams
-from argparse import ArgumentParser
 import json
-import cv2
-from utils.general_utils import safe_state
-from typing import Optional
-import sys
 import math
-
-from gaussian_renderer.fast_renderer import FastRenderer
-
-from scene.cameras import MiniCam
-
-import torch
-
-
 import os
-import numpy as np
+import sys
+from argparse import ArgumentParser
+from pathlib import Path
+from typing import Optional
+
+import cv2
 
 # Graphing
 import matplotlib.pyplot as plt
+import numpy as np
+import torch
 from matplotlib.axes import Axes
+
+from arguments import ModelParams, OptimizationParams, PipelineParams
+from gaussian_renderer.fast_renderer import FastRenderer
+from scene import GaussianModel
+from scene.cameras import MiniCam
+from scene.dataset_readers import ProjectionType
+from utils.general_utils import safe_state
+from utils.graphics_utils import focal2fov, getProjectionMatrix
+from utils.system_utils import searchForMaxIteration
+
 
 def load_gaussian_model(
     model_params: ModelParams,
@@ -47,13 +43,13 @@ def load_gaussian_model(
     # Search for a valid EVER-comaptible .ply
     else:
         loaded_iter = searchForMaxIteration(
-            os.path.join(model_params.model_path, "point_cloud")
+            os.path.join(model_params._model_path, "point_cloud")
         )
         print("Loading trained model at iteration {}".format(loaded_iter))
 
         gaussians.load_ply(
             os.path.join(
-                model_params.model_path,
+                model_params._model_path,
                 "point_cloud",
                 "iteration_" + str(loaded_iter),
                 "point_cloud.ply",
@@ -215,7 +211,6 @@ def gather_incoming_light_at_points(
                     rays_o, rays_d, tmin, 1e7
                 )
             else:
-
                 probe_image = renderer.trace_rays_using_shs(rays_o, rays_d, tmin, 1e7)
             colors.append(probe_image["color"][:, :3])  # (R, 3)
 

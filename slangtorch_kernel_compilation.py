@@ -19,3 +19,9 @@ brdf_eval_kernels = slangtorch.loadModule(
     },
     skipNinjaCheck=True,
 )
+
+
+# Sphere raytracing kernels
+sphere_raytracing_kernels = slangtorch.loadModule(
+    str(Path(__file__).parent / "ever/splinetracers/slang/sphere_raytrace.slang")
+)

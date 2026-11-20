@@ -16,6 +16,7 @@
 import torch
 import math
 
+from scene.cameras import MiniCam
 from scene.gaussian_model import GaussianModel
 from ever.splinetracers.fast_ellipsoid_splinetracer import trace_rays
 # from splinetracer.splinetracers.ellipsoid_splinetracer import trace_rays
@@ -107,7 +108,7 @@ def camera2rays_full(view, **kwargs):
     # ic(directions)
     return origins, directions
 
-def camera2rays(view, **kwargs):
+def camera2rays(view: MiniCam, **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
     w = view.image_width
     h = view.image_height
 
