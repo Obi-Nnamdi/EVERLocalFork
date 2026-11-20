@@ -2,6 +2,11 @@
 # Usage: docker build  --rm -f 'Dockerfile_splinetracer_only' -t 'obinnamdi/ever:v1.6_full_build' '.'
 FROM obinnamdi/ever:v1.6_prelim_image AS base
 
+# Build fast_knn_cu extension
+COPY fast_knn_cu /ever_training/fast_knn_cu
+ENV CMAKE_CUDA_ARCHITECTURES="60;61;70;75;80;86;90"
+RUN source activate ever && pip install --no-build-isolation ./fast_knn_cu
+
 # Copy ever code again to reflect code changes
 # chown flag is needed to prevent VSCode from breaking edit permissions
 COPY ever /ever_training/ever
@@ -13,11 +18,6 @@ RUN source activate ever && \
 # Uncomment if you want to update the OptiX version:
 # RUN rm -rf /opt/OptiX_7.4
 # COPY optix_9/ /opt/OptiX_7.4
-
-# Build fast_knn_cu extension
-COPY fast_knn_cu /ever_training/fast_knn_cu
-ENV CMAKE_CUDA_ARCHITECTURES="60;61;70;75;80;86;90"
-RUN source activate ever && pip install --no-build-isolation ./fast_knn_cu
 
 # Unset LD_LIBRARY_PATH to avoid problems with slangtorch later
 ENV LD_LIBRARY_PATH=
@@ -31,6 +31,7 @@ CMD ["/bin/bash", "-c", "source activate ever && exec bash"]
 
 FROM base AS vscode-stage
 # RUN apt update && apt install sudo
+RUN apt update && apt install -y --no-install-recommends xauth x11-apps
 
 # Add user for non-root VSCode DevContainer editing:
 # https://code.visualstudio.com/remote/advancedcontainers/add-nonroot-user

@@ -25,15 +25,19 @@
     // Properly bind X11 for display (https://www.pugetsystems.com/labs/hpc/NVIDIA-Docker2-with-OpenGL-and-X-Display-Output-1527/)
     "-v",
     "/tmp/.X11-unix:/tmp/.X11-unix",
-    "-e",
-    "XAUTHORITY",
+    // Not forwarding XAUTHORITY env variable anymore, rather, making a new one.
+    // "-e",
+    // "XAUTHORITY",
     // Changed for MAC Display forwarding:
     "-e",
     "DISPLAY",
-    "--privileged",
+    // "--privileged",
     // https://blog.yadutaf.fr/2017/09/10/running-a-graphical-app-in-a-docker-container-on-a-remote-server/
+    // Manually binding XAUTHORITY path to container
+    // bind the entire parent directory over a single path so that we can continually refresh xauth file
     "-v",
-    "/home/nnamdi-obi/.Xauthority:/home/vscode/.Xauthority",
+    "/home/nnamdi-obi/:/host_home",
+    // "/home/nnamdi-obi/.Xauthority:/home/vscode/.Xauthority",
     // NEEDED for GUI Apps to work.
     "--network=host"
   ],
@@ -69,6 +73,6 @@
   "postCreateCommand": [
     "bash",
     "-c",
-    "conda init && pip install ruff"
+    "conda init && pip install ruff && echo 'export XAUTHORITY=/host_home/.Xauthority' >> ~/.bashrc" // allows Xauthority to be continually refreshed
   ]
 }
